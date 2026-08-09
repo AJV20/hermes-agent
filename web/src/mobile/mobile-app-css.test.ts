@@ -64,4 +64,18 @@ describe('mobile bottom navigation layout', () => {
     expect(base).toContain('bottom: calc(5.35rem + var(--mobile-safe-bottom-capped))')
     expect(withAttachments).toContain('bottom: calc(8.6rem + var(--mobile-safe-bottom-capped))')
   })
+
+  it('uses native iPhone interaction and bottom-sheet affordances', () => {
+    const sheet = styles.match(/\.mobile-bottom-sheet\s*\{([^}]*)\}/)?.[1] ?? ''
+    const searchInput = styles.match(/\.mobile-search input\s*\{([^}]*)\}/)?.[1] ?? ''
+
+    expect(styles).toContain('backdrop-filter: saturate(180%) blur(22px)')
+    expect(styles).toContain(':focus-visible')
+    expect(styles).toContain('touch-action: manipulation')
+    expect(styles).toContain('transform: scale(0.97)')
+    expect(sheet).toContain('border-radius: 1.5rem 1.5rem 0 0')
+    expect(sheet).toContain('padding-bottom: calc(1rem + var(--mobile-safe-bottom-capped))')
+    expect(styles).toContain('.mobile-sheet-handle')
+    expect(searchInput).toContain('font-size: 1rem')
+  })
 })

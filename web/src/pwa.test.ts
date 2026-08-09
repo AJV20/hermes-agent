@@ -22,13 +22,14 @@ describe('PWA mobile shell', () => {
     )
   })
 
-  it('reloads controlled windows after a new service worker activates', () => {
+  it('announces a new service worker without forcing an in-place reload', () => {
     const worker = readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8')
 
     expect(worker).toContain('const HERMES_DEPLOY_REVISION = "__HERMES_DEPLOY_REVISION__"')
     expect(worker).toContain('searchParams.get("v")')
     expect(worker).toContain('HERMES_DEPLOY_REVISION}-${HERMES_PWA_URL_REVISION')
-    expect(worker).toContain('client.navigate(client.url)')
+    expect(worker).toContain('client.postMessage({ type: "HERMES_PWA_UPDATE_READY" });')
+    expect(worker).not.toContain('client.navigate(client.url)')
   })
 
   it('does not cache HTML or authenticated and realtime traffic', () => {

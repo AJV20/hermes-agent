@@ -39,7 +39,9 @@ self.addEventListener("activate", (event) => {
       await self.clients.claim();
       if (previous.length > 0) {
         const clients = await self.clients.matchAll({ type: "window" });
-        await Promise.all(clients.map((client) => client.navigate(client.url)));
+        await Promise.all(clients.map(async (client) => {
+          client.postMessage({ type: "HERMES_PWA_UPDATE_READY" });
+        }));
       }
     })(),
   );

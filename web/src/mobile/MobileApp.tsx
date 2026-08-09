@@ -11,10 +11,14 @@ import {
   Menu,
   MessageCircle,
   MoreHorizontal,
+  Pause,
+  Play,
   Plus,
+  Search,
   Send,
   Settings,
   Sparkles,
+  Trash2,
   Wifi,
   X
 } from 'lucide-react'
@@ -47,6 +51,50 @@ const PROMPT_TIMEOUT_MS = 1_800_000
 const RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000] as const
 const MAX_MOBILE_ATTACHMENT_BYTES = 50 * 1024 * 1024
 const MAX_MOBILE_IMAGE_BYTES = 25 * 1024 * 1024
+
+function draftStorageKey(profile: string, storedSessionId: string): string {
+  return `hermes.mobile.draft:${profile || 'default'}:${storedSessionId}`
+}
+
+function loadDraft(profile: string, storedSessionId: string): string {
+  try {
+    return window.localStorage.getItem(draftStorageKey(profile, storedSessionId)) || ''
+  } catch {
+    return ''
+  }
+}
+
+function saveDraft(profile: string, storedSessionId: string, value: string) {
+  try {
+    const key = draftStorageKey(profile, storedSessionId)
+    if (value) window.localStorage.setItem(key, value)
+    else window.localStorage.removeItem(key)
+  } catch {
+    // Draft persistence is best-effort in restricted browser contexts.
+  }
+}
+
+function outboxStorageKey(profile: string, storedSessionId: string): string {
+  return `hermes.mobile.outbox:${profile || 'default'}:${storedSessionId}`
+}
+
+function loadOutbox(profile: string, storedSessionId: string): string {
+  try {
+    return window.localStorage.getItem(outboxStorageKey(profile, storedSessionId)) || ''
+  } catch {
+    return ''
+  }
+}
+
+function saveOutbox(profile: string, storedSessionId: string, value: string) {
+  try {
+    const key = outboxStorageKey(profile, storedSessionId)
+    if (value) window.localStorage.setItem(key, value)
+    else window.localStorage.removeItem(key)
+  } catch {
+    // The in-memory outbox still works when storage is unavailable.
+  }
+}
 
 interface MobileAttachment {
   file: File
@@ -175,6 +223,31 @@ function useMobileViewportSync() {
   }, [])
 }
 
+function usePwaUpdateReady(): boolean {
+  const [ready, setReady] = useState(false)
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return
+    const onMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'HERMES_PWA_UPDATE_READY') setReady(true)
+    }
+    navigator.serviceWorker.addEventListener('message', onMessage)
+    return () => navigator.serviceWorker.removeEventListener('message', onMessage)
+  }, [])
+  return ready
+}
+
+function PwaUpdateBanner({ visible }: { visible: boolean }) {
+  if (!visible) return null
+  return (
+    <aside className="mobile-update-banner" role="status">
+      <span>A new Hermes Mobile update is ready.</span>
+      <button aria-label="Reload Hermes Mobile update" onClick={() => window.location.reload()} type="button">
+        Update now
+      </button>
+    </aside>
+  )
+}
+
 function IconButton({ children, disabled = false, label, onClick }: { children: ReactNode; disabled?: boolean; label: string; onClick?: () => void }) {
   return (
     <button className="mobile-icon-button" aria-label={label} disabled={disabled} onClick={onClick} type="button">
@@ -246,21 +319,28 @@ function QuickAction({ icon, label, to }: { icon: ReactNode; label: string; to: 
   )
 }
 
-function SessionRow({ session }: { session: SessionInfo }) {
+function SessionRow({ onActions, session }: { onActions?: () => void; session: SessionInfo }) {
   return (
-    <Link className="mobile-session-row" to={`/mobile/chat/${encodeURIComponent(session.id)}`}>
-      <span className="mobile-session-icon">
-        <MessageCircle />
-      </span>
-      <span className="mobile-session-copy">
-        <strong>{sessionLabel(session)}</strong>
-        <small>{session.preview || `${session.message_count} messages`}</small>
-      </span>
-      <span className="mobile-session-meta">
-        <small>{relativeTime(session.last_active || session.started_at)}</small>
-        <ChevronRight />
-      </span>
-    </Link>
+    <div className="mobile-session-row">
+      <Link className="mobile-session-main" to={`/mobile/chat/${encodeURIComponent(session.id)}`}>
+        <span className="mobile-session-icon">
+          <MessageCircle />
+        </span>
+        <span className="mobile-session-copy">
+          <strong>{sessionLabel(session)}</strong>
+          <small>{session.preview || `${session.message_count} messages`}</small>
+        </span>
+        <span className="mobile-session-meta">
+          <small>{relativeTime(session.last_active || session.started_at)}</small>
+          <ChevronRight />
+        </span>
+      </Link>
+      {onActions && (
+        <button aria-label={`Actions for ${sessionLabel(session)}`} className="mobile-row-actions" onClick={onActions} type="button">
+          <MoreHorizontal />
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -380,7 +460,66 @@ function HomeScreen({
   )
 }
 
-function ChatsScreen({ phase, sessions }: { phase: LoadPhase; sessions: SessionInfo[] }) {
+function ChatsScreen({
+  canLoadMore,
+  loadingMore,
+  onLoadMore,
+  phase,
+  profile,
+  sessions
+}: {
+  canLoadMore: boolean
+  loadingMore: boolean
+  onLoadMore: () => void
+  phase: LoadPhase
+  profile: string
+  sessions: SessionInfo[]
+}) {
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<SessionInfo[] | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [selected, setSelected] = useState<SessionInfo | null>(null)
+  const [title, setTitle] = useState('')
+  const [renamed, setRenamed] = useState<Record<string, string>>({})
+  const [deleted, setDeleted] = useState<Set<string>>(() => new Set())
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+
+  const search = useCallback(async (event: FormEvent) => {
+    event.preventDefault()
+    const value = query.trim()
+    if (!value) {
+      setResults(null)
+      return
+    }
+    setSearching(true)
+    try {
+      const response = await api.searchSessions(value, { order: 'recent', profile })
+      setResults(response.results)
+    } finally {
+      setSearching(false)
+    }
+  }, [profile, query])
+
+  const rename = useCallback(async (event: FormEvent) => {
+    event.preventDefault()
+    const nextTitle = title.trim()
+    if (!selected || !nextTitle) return
+    await api.renameSession(selected.id, nextTitle, profile)
+    setRenamed(current => ({ ...current, [selected.id]: nextTitle }))
+    setSelected(null)
+  }, [profile, selected, title])
+
+  const remove = useCallback(async () => {
+    if (!selected) return
+    await api.deleteSession(selected.id, profile)
+    setDeleted(current => new Set(current).add(selected.id))
+    setConfirmingDelete(false)
+    setSelected(null)
+  }, [profile, selected])
+
+  const visibleSessions = (results ?? sessions)
+    .filter(session => !deleted.has(session.id))
+    .map(session => renamed[session.id] ? { ...session, title: renamed[session.id] } : session)
   return (
     <>
       <AppHeader detail={
@@ -400,20 +539,124 @@ function ChatsScreen({ phase, sessions }: { phase: LoadPhase; sessions: SessionI
             <Plus />
           </Link>
         </div>
+        <form className="mobile-search" onSubmit={search} role="search">
+          <Search aria-hidden="true" />
+          <input
+            aria-label="Search conversations"
+            onChange={event => {
+              setQuery(event.target.value)
+              if (!event.target.value) setResults(null)
+            }}
+            placeholder="Search conversations"
+            type="search"
+            value={query}
+          />
+          <button disabled={searching || !query.trim()} type="submit">
+            {searching ? 'Searching…' : 'Search'}
+          </button>
+        </form>
         <div className="mobile-session-list">
-          {phase === 'ready' && sessions.map(session => (
-            <SessionRow key={session.id} session={session} />
+          {phase === 'ready' && visibleSessions.map(session => (
+            <SessionRow
+              key={session.id}
+              onActions={() => {
+                setSelected(session)
+                setTitle(sessionLabel(session))
+              }}
+              session={session}
+            />
           ))}
           {phase === 'loading' && <div className="mobile-empty-card" aria-busy="true">Loading conversations…</div>}
           {phase === 'error' && <div className="mobile-empty-card" role="alert">Could not load conversations.</div>}
-          {phase === 'ready' && !sessions.length && <div className="mobile-empty-card">No conversations yet.</div>}
+          {phase === 'ready' && !visibleSessions.length && (
+            <div className="mobile-empty-card">{results ? 'No matching conversations.' : 'No conversations yet.'}</div>
+          )}
+          {!results && phase === 'ready' && canLoadMore && (
+            <button
+              aria-label="Load more conversations"
+              className="mobile-load-more"
+              disabled={loadingMore}
+              onClick={onLoadMore}
+              type="button"
+            >
+              {loadingMore ? 'Loading more…' : 'Load more'}
+            </button>
+          )}
         </div>
       </main>
+      {selected && (
+        <div className="mobile-sheet-backdrop" onClick={() => setSelected(null)}>
+          <section
+            aria-label={`Conversation actions for ${sessionLabel(selected)}`}
+            aria-modal="true"
+            className="mobile-bottom-sheet"
+            onClick={event => event.stopPropagation()}
+            role="dialog"
+          >
+            <div className="mobile-sheet-handle" />
+            <h2>Conversation</h2>
+            <form onSubmit={rename}>
+              <label>
+                Title
+                <input aria-label="Conversation title" onChange={event => setTitle(event.target.value)} value={title} />
+              </label>
+              <button className="mobile-primary-button" type="submit">Save title</button>
+            </form>
+            {!confirmingDelete ? (
+              <button
+                aria-label="Delete conversation"
+                className="mobile-danger-button"
+                onClick={() => setConfirmingDelete(true)}
+                type="button"
+              >
+                <Trash2 /> Delete conversation
+              </button>
+            ) : (
+              <div className="mobile-confirm-delete" role="alert">
+                <p>This permanently removes the conversation from Hermes.</p>
+                <button aria-label="Confirm delete conversation" className="mobile-danger-button" onClick={() => void remove()} type="button">
+                  Delete permanently
+                </button>
+                <button onClick={() => setConfirmingDelete(false)} type="button">Keep conversation</button>
+              </div>
+            )}
+            <button className="mobile-sheet-cancel" onClick={() => setSelected(null)} type="button">Cancel</button>
+          </section>
+        </div>
+      )}
     </>
   )
 }
 
-function TasksScreen({ jobs, phase }: { jobs: CronJob[]; phase: LoadPhase }) {
+function TasksScreen({ jobs, phase, profile }: { jobs: CronJob[]; phase: LoadPhase; profile: string }) {
+  const [updates, setUpdates] = useState<Record<string, Partial<CronJob>>>({})
+  const [working, setWorking] = useState<string | null>(null)
+  const visibleJobs = jobs.map(job => ({ ...job, ...(updates[job.id] ?? {}) }))
+  const attentionJobs = visibleJobs.filter(job => (
+    Boolean(job.last_error || job.last_delivery_error) || ['error', 'failed', 'failure'].includes(job.last_status || '')
+  ))
+
+  const updateJob = useCallback(async (job: CronJob, action: 'pause' | 'resume' | 'run') => {
+    setWorking(`${job.id}:${action}`)
+    try {
+      const updated = action === 'run'
+        ? await api.triggerCronJob(job.id, profile)
+        : action === 'pause'
+          ? await api.pauseCronJob(job.id, profile)
+          : await api.resumeCronJob(job.id, profile)
+      setUpdates(current => ({
+        ...current,
+        [job.id]: {
+          ...(current[job.id] ?? {}),
+          ...updated,
+          state: action === 'run' ? 'running' : action === 'pause' ? 'paused' : null
+        }
+      }))
+    } finally {
+      setWorking(null)
+    }
+  }, [profile])
+
   return (
     <>
       <AppHeader detail="Automations and schedules" />
@@ -424,23 +667,54 @@ function TasksScreen({ jobs, phase }: { jobs: CronJob[]; phase: LoadPhase }) {
             <h1>Tasks</h1>
           </div>
         </div>
+        {!!attentionJobs.length && (
+          <section className="mobile-attention-card" aria-label="Tasks needing attention">
+            <strong>{attentionJobs.length} {attentionJobs.length === 1 ? 'task needs' : 'tasks need'} attention</strong>
+            {attentionJobs.map(job => (
+              <p key={job.id}>{job.name || 'Hermes task'}: {job.last_error || job.last_delivery_error || job.last_status}</p>
+            ))}
+          </section>
+        )}
         <div className="mobile-task-list">
-          {phase === 'ready' && jobs.map(job => (
-            <DesktopDocumentLink className="mobile-task-card" key={job.id} to="/cron">
+          {phase === 'ready' && visibleJobs.map(job => (
+            <article className="mobile-task-card" key={job.id}>
               <span className="mobile-task-icon">{job.last_status === 'success' ? <CheckCircle2 /> : <Clock3 />}</span>
               <span>
                 <strong>{job.name || 'Hermes task'}</strong>
                 <small>{formatJobRun(job)}</small>
               </span>
               <span className={`mobile-status-pill ${job.enabled ? '' : 'is-muted'}`}>
-                {job.enabled ? 'Enabled' : 'Paused'}
+                {job.state === 'running' ? 'Running' : job.enabled ? 'Enabled' : 'Paused'}
               </span>
-            </DesktopDocumentLink>
+              <div className="mobile-task-actions">
+                <button
+                  aria-label={`Run ${job.name || 'Hermes task'} now`}
+                  disabled={working !== null}
+                  onClick={() => void updateJob(job, 'run')}
+                  type="button"
+                >
+                  <Play /> Run
+                </button>
+                <button
+                  aria-label={`${job.enabled ? 'Pause' : 'Resume'} ${job.name || 'Hermes task'}`}
+                  disabled={working !== null}
+                  onClick={() => void updateJob(job, job.enabled ? 'pause' : 'resume')}
+                  type="button"
+                >
+                  {job.enabled ? <Pause /> : <Play />} {job.enabled ? 'Pause' : 'Resume'}
+                </button>
+              </div>
+            </article>
           ))}
           {phase === 'loading' && <div className="mobile-empty-card" aria-busy="true">Loading scheduled tasks…</div>}
           {phase === 'error' && <div className="mobile-empty-card" role="alert">Could not load scheduled tasks.</div>}
           {phase === 'ready' && !jobs.length && <div className="mobile-empty-card">No scheduled tasks.</div>}
         </div>
+        <DesktopDocumentLink to="/cron">
+          <Settings />
+          <strong>Advanced schedule settings</strong>
+          <ChevronRight />
+        </DesktopDocumentLink>
       </main>
     </>
   )
@@ -510,16 +784,26 @@ function ChatScreen({
   const submitInFlight = useRef(false)
   const filePickerRef = useRef<HTMLInputElement | null>(null)
   const [chat, setChat] = useState<MobileChatState>(EMPTY_CHAT)
-  const [draft, setDraft] = useState('')
+  const [draft, setDraft] = useState(() => loadDraft(profile, storedSessionId))
+  const [queuedText, setQueuedText] = useState(() => loadOutbox(profile, storedSessionId))
   const [attachments, setAttachments] = useState<MobileAttachment[]>([])
   const [connected, setConnected] = useState(false)
   const [ready, setReady] = useState(false)
+  const [connectionEpoch, setConnectionEpoch] = useState(0)
   const [showJumpLatest, setShowJumpLatest] = useState(false)
   const [historyPage, setHistoryPage] = useState({ hasEarlier: false, loading: false, nextOffset: 0 })
   const shouldAutoFollowRef = useRef(true)
   const threadRef = useRef<HTMLDivElement | null>(null)
   const pendingPrependRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null)
   const historyHydratedRef = useRef(false)
+
+  useEffect(() => {
+    saveDraft(profile, storedSessionId, draft)
+  }, [draft, profile, storedSessionId])
+
+  useEffect(() => {
+    saveOutbox(profile, storedSessionId, queuedText)
+  }, [profile, queuedText, storedSessionId])
 
   useEffect(() => {
     let cancelled = false
@@ -627,7 +911,7 @@ function ChatScreen({
       disposers.forEach(dispose => dispose())
       gateway.close()
     }
-  }, [gateway, isNew, navigate, profile, storedSessionId])
+  }, [connectionEpoch, gateway, isNew, navigate, profile, storedSessionId])
 
   useLayoutEffect(() => {
     const node = threadRef.current
@@ -711,7 +995,17 @@ function ChatScreen({
       event.preventDefault()
       const text = draft.trim()
       const pendingAttachments = attachments
-      if (!ready || (!text && !pendingAttachments.length) || chat.busy || submitInFlight.current) return
+      if ((!text && !pendingAttachments.length) || chat.busy || submitInFlight.current) return
+      if (!ready) {
+        if (pendingAttachments.length) {
+          setChat(current => ({ ...current, error: 'Reconnect before sending attachments. Your selection is preserved.' }))
+          return
+        }
+        setQueuedText(text)
+        setDraft('')
+        setChat(current => ({ ...current, error: null }))
+        return
+      }
       const optimisticId = `user-${Date.now()}`
       const attachmentNames = pendingAttachments.map(attachment => attachment.file.name).join(', ')
       const optimisticContent = [text, attachmentNames ? `📎 ${attachmentNames}` : ''].filter(Boolean).join('\n')
@@ -861,9 +1155,40 @@ function ChatScreen({
         {chat.error && (
           <div className="mobile-error" role="alert">
             {chat.error}
+            {!ready && (
+              <button
+                aria-label="Retry Hermes connection"
+                onClick={() => {
+                  setChat(current => ({ ...current, error: null }))
+                  setConnectionEpoch(current => current + 1)
+                }}
+                type="button"
+              >
+                Retry now
+              </button>
+            )}
           </div>
         )}
       </div>
+      {queuedText && (
+        <aside className="mobile-outbox" role="status">
+          <span>Queued until Hermes reconnects</span>
+          <button
+            aria-label="Review queued message"
+            onClick={() => {
+              if (draft.trim()) {
+                setChat(current => ({ ...current, error: 'Clear or send the current draft before reviewing the queued message.' }))
+                return
+              }
+              setDraft(queuedText)
+              setQueuedText('')
+            }}
+            type="button"
+          >
+            Review
+          </button>
+        </aside>
+      )}
       {showJumpLatest && (
         <button
           aria-label="Jump to latest message"
@@ -910,16 +1235,16 @@ function ChatScreen({
         </IconButton>
         <textarea
           aria-label="Message Hermes"
-          disabled={!ready || chat.busy}
+          disabled={chat.busy}
           onChange={event => setDraft(event.target.value)}
-          placeholder={chat.busy ? 'Hermes is responding…' : ready ? 'Message Hermes…' : isNew ? 'Connecting to Hermes…' : 'Resuming conversation…'}
+          placeholder={chat.busy ? 'Hermes is responding…' : ready ? 'Message Hermes…' : 'Write now — Hermes will send when connected…'}
           rows={1}
           value={draft}
         />
         <button
-          aria-label="Send message"
+          aria-label={ready ? 'Send message' : 'Queue message'}
           className="mobile-send"
-          disabled={!ready || (!draft.trim() && !attachments.length) || chat.busy}
+          disabled={(!draft.trim() && !attachments.length) || chat.busy}
           type="submit"
         >
           <Send />
@@ -931,9 +1256,12 @@ function ChatScreen({
 
 export function MobileApp() {
   useMobileViewportSync()
+  const updateReady = usePwaUpdateReady()
   const { pathname } = useLocation()
   const { currentProfile, profile } = useProfileScope()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
+  const [sessionsTotal, setSessionsTotal] = useState(0)
+  const [loadingMoreSessions, setLoadingMoreSessions] = useState(false)
   const [cronJobs, setCronJobs] = useState<CronJob[]>([])
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [statusLoad, setStatusLoad] = useState<ScopedLoadState>({ phase: 'loading', scope: null })
@@ -984,11 +1312,13 @@ export function MobileApp() {
       value => {
         if (cancelled) return
         setSessions(value.sessions)
+        setSessionsTotal(value.total)
         setSessionsLoad({ phase: 'ready', scope: requestScope })
       },
       () => {
         if (cancelled) return
         setSessions([])
+        setSessionsTotal(0)
         setSessionsLoad({ phase: 'error', scope: requestScope })
       }
     )
@@ -997,6 +1327,21 @@ export function MobileApp() {
       cancelled = true
     }
   }, [profile, selectedProfile, sessionsRefreshKey])
+
+  const loadMoreSessions = useCallback(async () => {
+    if (loadingMoreSessions || sessions.length >= sessionsTotal) return
+    setLoadingMoreSessions(true)
+    try {
+      const value = await api.getSessions(30, sessions.length, { order: 'recent', profile })
+      setSessions(current => {
+        const existing = new Set(current.map(session => session.id))
+        return [...current, ...value.sessions.filter(session => !existing.has(session.id))]
+      })
+      setSessionsTotal(value.total)
+    } finally {
+      setLoadingMoreSessions(false)
+    }
+  }, [loadingMoreSessions, profile, sessions.length, sessionsTotal])
 
   const statusPhase: LoadPhase = statusLoad.scope === selectedProfile ? statusLoad.phase : 'loading'
   const sessionsPhase: LoadPhase = sessionsLoad.scope === selectedProfile ? sessionsLoad.phase : 'loading'
@@ -1013,12 +1358,15 @@ export function MobileApp() {
     const storedSessionId = safeDecodePathSegment(chatMatch[1])
     if (!storedSessionId) return <Navigate replace to="/mobile/chats" />
     return (
-      <ChatScreen
-        key={`${profile}\u0000${storedSessionId}`}
-        onSessionCreated={() => setSessionsRefreshKey(current => current + 1)}
-        profile={profile}
-        storedSessionId={storedSessionId}
-      />
+      <>
+        <ChatScreen
+          key={`${profile}\u0000${storedSessionId}`}
+          onSessionCreated={() => setSessionsRefreshKey(current => current + 1)}
+          profile={profile}
+          storedSessionId={storedSessionId}
+        />
+        <PwaUpdateBanner visible={updateReady} />
+      </>
     )
   }
 
@@ -1035,10 +1383,20 @@ export function MobileApp() {
           tasksPhase={tasksPhase}
         />
       )}
-      {active === 'chats' && <ChatsScreen phase={sessionsPhase} sessions={visibleSessions} />}
-      {active === 'tasks' && <TasksScreen jobs={orderedCronJobs} phase={tasksPhase} />}
+      {active === 'chats' && (
+        <ChatsScreen
+          canLoadMore={visibleSessions.length < sessionsTotal}
+          loadingMore={loadingMoreSessions}
+          onLoadMore={() => void loadMoreSessions()}
+          phase={sessionsPhase}
+          profile={profile}
+          sessions={visibleSessions}
+        />
+      )}
+      {active === 'tasks' && <TasksScreen jobs={orderedCronJobs} phase={tasksPhase} profile={selectedProfile} />}
       {active === 'more' && <MoreScreen />}
       <BottomNavigation active={active} />
+      <PwaUpdateBanner visible={updateReady} />
     </div>
   )
 }

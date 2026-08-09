@@ -5,9 +5,13 @@ import { Link, MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const apiMocks = vi.hoisted(() => ({
+  deleteSession: vi.fn(async () => ({ ok: true })),
   getCronJobs: vi.fn(async () => [
     { id: 'daily', enabled: true, name: 'Morning briefing', next_run_at: '2026-08-09T11:00:00Z' }
   ]),
+  pauseCronJob: vi.fn(async (id: string) => ({ id, enabled: false, name: 'Morning briefing' })),
+  resumeCronJob: vi.fn(async (id: string) => ({ id, enabled: true, name: 'Morning briefing' })),
+  triggerCronJob: vi.fn(async (id: string) => ({ id, enabled: true, name: 'Morning briefing', state: 'running' })),
   getSessionMessages: vi.fn(async (_sessionId?: string): Promise<{
     messages: never[]
     pagination?: { limit: number; offset: number; order: 'latest' | 'oldest'; returned: number }
@@ -43,7 +47,9 @@ const apiMocks = vi.hoisted(() => ({
     gateway_running: true,
     gateway_state: 'running',
     version: '1.0.0'
-  }))
+  })),
+  renameSession: vi.fn(async (_id: string, title: string) => ({ ok: true, title })),
+  searchSessions: vi.fn(async (): Promise<{ results: unknown[] }> => ({ results: [] }))
 }))
 
 const gatewayMocks = vi.hoisted(() => ({
@@ -53,6 +59,9 @@ const gatewayMocks = vi.hoisted(() => ({
   stateHandler: null as ((state: string) => void) | null
 }))
 const profileMocks = vi.hoisted(() => ({ currentProfile: 'default', profile: '' }))
+const pwaMocks = vi.hoisted(() => ({
+  messageHandler: null as ((event: MessageEvent) => void) | null
+}))
 
 vi.mock('@/lib/api', () => ({ api: apiMocks, HERMES_BASE_PATH: '' }))
 vi.mock('@/contexts/useProfileScope', () => ({
@@ -97,18 +106,75 @@ beforeEach(() => {
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
-  gatewayMocks.request.mockImplementation(async (method: string) => {
+  apiMocks.deleteSession.mockReset().mockResolvedValue({ ok: true })
+  apiMocks.getCronJobs.mockReset().mockResolvedValue([
+    { id: 'daily', enabled: true, name: 'Morning briefing', next_run_at: '2026-08-09T11:00:00Z' }
+  ])
+  apiMocks.pauseCronJob.mockReset().mockImplementation(async (id: string) => ({ id, enabled: false, name: 'Morning briefing' }))
+  apiMocks.resumeCronJob.mockReset().mockImplementation(async (id: string) => ({ id, enabled: true, name: 'Morning briefing' }))
+  apiMocks.triggerCronJob.mockReset().mockImplementation(async (id: string) => ({
+    id,
+    enabled: true,
+    name: 'Morning briefing',
+    state: 'running'
+  }))
+  apiMocks.getSessionMessages.mockReset().mockImplementation(async (_sessionId?: string) => {
+    void _sessionId
+    return { messages: [], session_id: 'session-1' }
+  })
+  apiMocks.getSessions.mockReset().mockResolvedValue({
+    limit: 20,
+    offset: 0,
+    total: 1,
+    sessions: [
+      {
+        id: 'session-1',
+        source: 'desktop',
+        model: 'gpt-5.6-sol',
+        title: 'Hermes mobile PWA',
+        started_at: 1,
+        ended_at: null,
+        last_active: 2,
+        is_active: true,
+        message_count: 4,
+        tool_call_count: 1,
+        input_tokens: 10,
+        output_tokens: 20,
+        preview: 'Building the mobile companion'
+      }
+    ]
+  })
+  apiMocks.getStatus.mockReset().mockResolvedValue({
+    active_sessions: 1,
+    gateway_running: true,
+    gateway_state: 'running',
+    version: '1.0.0'
+  })
+  apiMocks.renameSession.mockReset().mockImplementation(async (_id: string, title: string) => ({ ok: true, title }))
+  apiMocks.searchSessions.mockReset().mockResolvedValue({ results: [] })
+  gatewayMocks.request.mockReset().mockImplementation(async (method: string) => {
     if (method === 'session.create') {
       return { session_id: 'runtime-1', stored_session_id: 'stored-1' }
     }
     if (method === 'session.resume') return { session_id: 'runtime-resumed' }
     return {}
   })
-  gatewayMocks.connect.mockResolvedValue(undefined)
+  gatewayMocks.connect.mockReset().mockResolvedValue(undefined)
   gatewayMocks.eventHandler = null
   gatewayMocks.stateHandler = null
   profileMocks.profile = ''
   profileMocks.currentProfile = 'default'
+  pwaMocks.messageHandler = null
+  Object.defineProperty(navigator, 'serviceWorker', {
+    configurable: true,
+    value: {
+      addEventListener: (_type: string, handler: (event: MessageEvent) => void) => {
+        pwaMocks.messageHandler = handler
+      },
+      removeEventListener: vi.fn()
+    }
+  })
+  window.localStorage.clear()
 })
 
 afterEach(async () => {
@@ -148,6 +214,18 @@ describe('MobileApp', () => {
     const labels = links.map(node => node.textContent)
     expect(labels).toEqual(['Home', 'Chats', 'Tasks', 'More'])
     expect(links.map(node => node.getAttribute('aria-current'))).toEqual(['page', null, null, null])
+  })
+
+  it('shows a native update banner when a new service worker activates', async () => {
+    await renderAt('/mobile')
+    expect(pwaMocks.messageHandler).not.toBeNull()
+
+    await act(async () => {
+      pwaMocks.messageHandler?.(new MessageEvent('message', { data: { type: 'HERMES_PWA_UPDATE_READY' } }))
+    })
+
+    expect(container.textContent).toContain('A new Hermes Mobile update is ready.')
+    expect(container.querySelector('button[aria-label="Reload Hermes Mobile update"]')).not.toBeNull()
   })
 
   it('uses normal document anchors for cross-shell desktop destinations', async () => {
@@ -210,6 +288,145 @@ describe('MobileApp', () => {
     expect(names).toEqual(['Soon task', 'Later task', 'Paused task'])
     expect(schedule).not.toContain('2026-08-10T09:00:00-04:00')
     expect(schedule).toMatch(/Aug|Today|Tomorrow/)
+  })
+
+  it('runs and pauses scheduled tasks directly from mobile', async () => {
+    await renderAt('/mobile/tasks')
+
+    const run = container.querySelector('button[aria-label="Run Morning briefing now"]') as HTMLButtonElement
+    const pause = container.querySelector('button[aria-label="Pause Morning briefing"]') as HTMLButtonElement
+    expect(run).not.toBeNull()
+    expect(pause).not.toBeNull()
+    await act(async () => {
+      run.click()
+      await Promise.resolve()
+    })
+    expect(apiMocks.triggerCronJob).toHaveBeenCalledWith('daily', 'default')
+    expect(container.textContent).toContain('Running')
+
+    await act(async () => {
+      pause.click()
+      await Promise.resolve()
+    })
+    expect(apiMocks.pauseCronJob).toHaveBeenCalledWith('daily', 'default')
+    expect(container.textContent).toContain('Paused')
+  })
+
+  it('searches conversations from the mobile chats screen', async () => {
+    apiMocks.searchSessions.mockResolvedValueOnce({
+      results: [{
+        id: 'session-search',
+        session_id: 'session-search',
+        source: 'desktop',
+        model: 'gpt-5.6-sol',
+        title: 'Recovered deployment notes',
+        started_at: 1,
+        ended_at: null,
+        last_active: 2,
+        is_active: false,
+        message_count: 2,
+        tool_call_count: 0,
+        input_tokens: 4,
+        output_tokens: 8,
+        preview: 'Rollback and verification details',
+        snippet: 'deployment notes',
+        role: 'assistant',
+        session_started: 1
+      }]
+    })
+    await renderAt('/mobile/chats')
+
+    const search = container.querySelector('input[aria-label="Search conversations"]') as HTMLInputElement
+    expect(search).not.toBeNull()
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      valueSetter?.call(search, 'deployment')
+      search.dispatchEvent(new Event('input', { bubbles: true }))
+      ;(search.closest('form') as HTMLFormElement).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+
+    expect(apiMocks.searchSessions).toHaveBeenCalledWith('deployment', { order: 'recent', profile: '' })
+    expect(container.textContent).toContain('Recovered deployment notes')
+    expect(container.textContent).not.toContain('Hermes mobile PWA')
+  })
+
+  it('renames a conversation from a mobile action sheet', async () => {
+    await renderAt('/mobile/chats')
+
+    const actions = container.querySelector('button[aria-label="Actions for Hermes mobile PWA"]') as HTMLButtonElement
+    expect(actions).not.toBeNull()
+    await act(async () => actions.click())
+
+    const title = container.querySelector('input[aria-label="Conversation title"]') as HTMLInputElement
+    expect(title.value).toBe('Hermes mobile PWA')
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      valueSetter?.call(title, 'Native mobile roadmap')
+      title.dispatchEvent(new Event('input', { bubbles: true }))
+      ;(title.closest('form') as HTMLFormElement).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+
+    expect(apiMocks.renameSession).toHaveBeenCalledWith('session-1', 'Native mobile roadmap', '')
+    expect(container.textContent).toContain('Native mobile roadmap')
+  })
+
+  it('requires confirmation before deleting a conversation', async () => {
+    await renderAt('/mobile/chats')
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Actions for Hermes mobile PWA"]') as HTMLButtonElement).click()
+    })
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Delete conversation"]') as HTMLButtonElement).click()
+    })
+
+    expect(apiMocks.deleteSession).not.toHaveBeenCalled()
+    const confirm = container.querySelector('button[aria-label="Confirm delete conversation"]') as HTMLButtonElement
+    expect(confirm).not.toBeNull()
+    await act(async () => {
+      confirm.click()
+      await Promise.resolve()
+    })
+
+    expect(apiMocks.deleteSession).toHaveBeenCalledWith('session-1', '')
+    expect(container.textContent).not.toContain('Hermes mobile PWA')
+  })
+
+  it('loads more conversations without replacing the current list', async () => {
+    apiMocks.getSessions
+      .mockResolvedValueOnce({
+        limit: 30,
+        offset: 0,
+        total: 31,
+        sessions: [{
+          id: 'session-1', source: 'desktop', model: 'gpt-5.6-sol', title: 'First conversation',
+          started_at: 1, ended_at: null, last_active: 2, is_active: true, message_count: 4,
+          tool_call_count: 1, input_tokens: 10, output_tokens: 20, preview: 'First page'
+        }]
+      })
+      .mockResolvedValueOnce({
+        limit: 30,
+        offset: 30,
+        total: 31,
+        sessions: [{
+          id: 'session-31', source: 'telegram', model: 'gpt-5.6-sol', title: 'Older conversation',
+          started_at: 1, ended_at: null, last_active: 1, is_active: false, message_count: 2,
+          tool_call_count: 0, input_tokens: 2, output_tokens: 4, preview: 'Second page'
+        }]
+      })
+    await renderAt('/mobile/chats')
+
+    const loadMore = container.querySelector('button[aria-label="Load more conversations"]') as HTMLButtonElement
+    expect(loadMore).not.toBeNull()
+    await act(async () => {
+      loadMore.click()
+      await Promise.resolve()
+    })
+
+    expect(apiMocks.getSessions).toHaveBeenLastCalledWith(30, 1, { order: 'recent', profile: '' })
+    expect(container.textContent).toContain('First conversation')
+    expect(container.textContent).toContain('Older conversation')
   })
 
   it('opens an attachment picker from the chat composer', async () => {
@@ -416,7 +633,7 @@ describe('MobileApp', () => {
     expect(container.textContent).toContain('upload failed')
   })
 
-  it('keeps a new-chat composer disabled until the gateway connection is ready', async () => {
+  it('allows drafting while the gateway connects and queues the message safely', async () => {
     let finishConnect!: () => void
     gatewayMocks.connect.mockReturnValueOnce(new Promise<void>(resolve => {
       finishConnect = resolve
@@ -424,14 +641,50 @@ describe('MobileApp', () => {
     await renderAt('/mobile/chat/new')
 
     const textarea = container.querySelector('textarea') as HTMLTextAreaElement
-    expect(textarea.disabled).toBe(true)
-    expect(textarea.placeholder).toBe('Connecting to Hermes…')
+    const form = container.querySelector('.mobile-composer') as HTMLFormElement
+    expect(textarea.disabled).toBe(false)
+    expect(textarea.placeholder).toBe('Write now — Hermes will send when connected…')
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      valueSetter?.call(textarea, 'Queue this safely')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    })
+    expect(container.textContent).toContain('Queued until Hermes reconnects')
+    expect(gatewayMocks.request).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
 
     await act(async () => {
       finishConnect()
       await Promise.resolve()
+      await Promise.resolve()
     })
-    expect(textarea.disabled).toBe(false)
+    expect(gatewayMocks.request).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+    const reviewQueued = container.querySelector('button[aria-label="Review queued message"]') as HTMLButtonElement
+    expect(reviewQueued).not.toBeNull()
+    await act(async () => reviewQueued.click())
+    expect(textarea.value).toBe('Queue this safely')
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+    expect(gatewayMocks.request).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({ text: 'Queue this safely' })
+    )
+  })
+
+  it('persists unsent drafts across mobile route changes', async () => {
+    await renderAt('/mobile/chat/new')
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      valueSetter?.call(textarea, 'Keep this draft')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    await renderAt('/mobile')
+    await renderAt('/mobile/chat/new')
+    expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Keep this draft')
   })
 
   it('restores the typed prompt when sending fails', async () => {
@@ -460,7 +713,7 @@ describe('MobileApp', () => {
     expect(container.querySelectorAll('.mobile-bubble.is-user')).toHaveLength(0)
   })
 
-  it('disables sending after the gateway closes without losing the draft', async () => {
+  it('keeps offline drafting available after the gateway closes without sending prematurely', async () => {
     await renderAt('/mobile/chat/new')
     const textarea = container.querySelector('textarea') as HTMLTextAreaElement
     await act(async () => {
@@ -470,8 +723,9 @@ describe('MobileApp', () => {
       gatewayMocks.stateHandler?.('closed')
     })
 
-    expect(textarea.disabled).toBe(true)
+    expect(textarea.disabled).toBe(false)
     expect(textarea.value).toBe('Keep this while reconnecting')
+    expect(container.querySelector('button[aria-label="Queue message"]')).not.toBeNull()
   })
 
   it('reconnects with bounded backoff and re-enables the preserved draft', async () => {
@@ -489,13 +743,14 @@ describe('MobileApp', () => {
         textarea.dispatchEvent(new Event('input', { bubbles: true }))
         gatewayMocks.stateHandler?.('closed')
       })
-      expect(textarea.disabled).toBe(true)
+      expect(textarea.disabled).toBe(false)
+      expect(container.querySelector('button[aria-label="Queue message"]')).not.toBeNull()
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(500)
       })
       expect(gatewayMocks.connect).toHaveBeenCalledTimes(2)
-      expect(textarea.disabled).toBe(true)
+      expect(textarea.disabled).toBe(false)
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1000)
@@ -503,6 +758,30 @@ describe('MobileApp', () => {
       expect(gatewayMocks.connect).toHaveBeenCalledTimes(3)
       expect(textarea.disabled).toBe(false)
       expect(textarea.value).toBe('Send after reconnect')
+      expect(container.querySelector('button[aria-label="Send message"]')).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('offers a manual retry after automatic reconnect attempts are exhausted', async () => {
+    vi.useFakeTimers()
+    try {
+      gatewayMocks.connect.mockRejectedValue(new Error('offline'))
+      await renderAt('/mobile/chat/new')
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15_501)
+        await Promise.resolve()
+      })
+
+      const retry = container.querySelector('button[aria-label="Retry Hermes connection"]') as HTMLButtonElement
+      expect(retry).not.toBeNull()
+      gatewayMocks.connect.mockResolvedValue(undefined)
+      await act(async () => {
+        retry.click()
+        await Promise.resolve()
+      })
+      expect((container.querySelector('textarea') as HTMLTextAreaElement).disabled).toBe(false)
     } finally {
       vi.useRealTimers()
     }
@@ -540,7 +819,8 @@ describe('MobileApp', () => {
 
       await renderAt('/mobile/chat/session-1')
       const textarea = container.querySelector('textarea') as HTMLTextAreaElement
-      expect(textarea.disabled).toBe(true)
+      expect(textarea.disabled).toBe(false)
+      expect(textarea.placeholder).toBe('Write now — Hermes will send when connected…')
       expect(apiMocks.getSessionMessages).not.toHaveBeenCalled()
 
       await act(async () => {
