@@ -42,6 +42,7 @@ describe('mobile bottom navigation layout', () => {
     const sectionLink = styles.match(/\.mobile-section-heading a\s*\{([^}]*)\}/)?.[1] ?? ''
     const resumeButton = styles.match(/\.mobile-resume-card button\s*\{([^}]*)\}/)?.[1] ?? ''
     const roundAction = styles.match(/\.mobile-round-action\s*\{([^}]*)\}/)?.[1] ?? ''
+    const attachmentRemove = styles.match(/\.mobile-attachment-chip button\s*\{([^}]*)\}/)?.[1] ?? ''
 
     expect(iconButton).toContain('width: 3rem')
     expect(iconButton).toContain('height: 3rem')
@@ -49,5 +50,7 @@ describe('mobile bottom navigation layout', () => {
     expect(resumeButton).toContain('min-height: 3rem')
     expect(roundAction).toContain('width: 3rem')
     expect(roundAction).toContain('height: 3rem')
+    expect(attachmentRemove).toContain('width: 3rem')
+    expect(attachmentRemove).toContain('height: 3rem')
   })
 })

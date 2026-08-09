@@ -15,7 +15,8 @@ import {
   Send,
   Settings,
   Sparkles,
-  Wifi
+  Wifi,
+  X
 } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type FormEvent, type ReactNode } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router'
@@ -44,6 +45,25 @@ const EMPTY_CHAT: MobileChatState = {
 }
 const PROMPT_TIMEOUT_MS = 1_800_000
 const RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000] as const
+const MAX_MOBILE_ATTACHMENT_BYTES = 50 * 1024 * 1024
+const MAX_MOBILE_IMAGE_BYTES = 25 * 1024 * 1024
+
+interface MobileAttachment {
+  file: File
+  id: string
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error ?? new Error(`Could not read ${file.name}`))
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result)
+      else reject(new Error(`Could not read ${file.name}`))
+    }
+    reader.readAsDataURL(file)
+  })
+}
 
 type LoadPhase = 'error' | 'loading' | 'ready'
 
@@ -488,8 +508,10 @@ function ChatScreen({
   const runtimeId = useRef<string | null>(null)
   const pendingStoredId = useRef<string | null>(null)
   const submitInFlight = useRef(false)
+  const filePickerRef = useRef<HTMLInputElement | null>(null)
   const [chat, setChat] = useState<MobileChatState>(EMPTY_CHAT)
   const [draft, setDraft] = useState('')
+  const [attachments, setAttachments] = useState<MobileAttachment[]>([])
   const [connected, setConnected] = useState(false)
   const [ready, setReady] = useState(false)
   const [showJumpLatest, setShowJumpLatest] = useState(false)
@@ -688,10 +710,14 @@ function ChatScreen({
     async (event: FormEvent) => {
       event.preventDefault()
       const text = draft.trim()
-      if (!ready || !text || chat.busy || submitInFlight.current) return
+      const pendingAttachments = attachments
+      if (!ready || (!text && !pendingAttachments.length) || chat.busy || submitInFlight.current) return
       const optimisticId = `user-${Date.now()}`
+      const attachmentNames = pendingAttachments.map(attachment => attachment.file.name).join(', ')
+      const optimisticContent = [text, attachmentNames ? `📎 ${attachmentNames}` : ''].filter(Boolean).join('\n')
       submitInFlight.current = true
       setDraft('')
+      setAttachments([])
       setChat(current => ({
         ...current,
         busy: true,
@@ -699,7 +725,7 @@ function ChatScreen({
         messages: [
           ...current.messages,
           {
-            content: text,
+            content: optimisticContent,
             id: optimisticId,
             role: 'user'
           }
@@ -714,14 +740,41 @@ function ChatScreen({
               cols: 48,
               ...(profile ? { profile } : {}),
               source: 'web',
-              title: text.slice(0, 72)
+              title: (text || attachmentNames || 'Attachment').slice(0, 72)
             }
           )
           sid = created.session_id
           runtimeId.current = sid
           pendingStoredId.current = created.stored_session_id || sid
         }
-        await gateway.request('prompt.submit', { session_id: sid, text }, PROMPT_TIMEOUT_MS)
+        const fileRefs: string[] = []
+        for (const attachment of pendingAttachments) {
+          const dataUrl = await readFileAsDataUrl(attachment.file)
+          if (attachment.file.type.startsWith('image/')) {
+            const attached = await gateway.request<{ attached?: boolean; message?: string }>('image.attach_bytes', {
+              content_base64: dataUrl.slice(dataUrl.indexOf(',') + 1),
+              filename: attachment.file.name,
+              session_id: sid
+            })
+            if (!attached.attached) throw new Error(attached.message || `Could not attach ${attachment.file.name}`)
+          } else {
+            const attached = await gateway.request<{ attached?: boolean; message?: string; ref_text?: string }>(
+              'file.attach',
+              {
+                data_url: dataUrl,
+                name: attachment.file.name,
+                path: attachment.file.name,
+                session_id: sid
+              }
+            )
+            if (!attached.attached || !attached.ref_text) {
+              throw new Error(attached.message || `Could not attach ${attachment.file.name}`)
+            }
+            fileRefs.push(attached.ref_text)
+          }
+        }
+        const promptText = [...fileRefs, text].filter(Boolean).join('\n\n')
+        await gateway.request('prompt.submit', { session_id: sid, text: promptText }, PROMPT_TIMEOUT_MS)
         submitInFlight.current = false
         if (pendingStoredId.current) {
           const durable = pendingStoredId.current
@@ -732,6 +785,7 @@ function ChatScreen({
       } catch (error) {
         submitInFlight.current = false
         setDraft(current => current.trim() ? current : text)
+        setAttachments(current => current.length ? current : pendingAttachments)
         setChat(current => ({
           ...current,
           busy: false,
@@ -740,8 +794,29 @@ function ChatScreen({
         }))
       }
     },
-    [chat.busy, draft, gateway, navigate, onSessionCreated, profile, ready]
+    [attachments, chat.busy, draft, gateway, navigate, onSessionCreated, profile, ready]
   )
+
+  const selectAttachments = useCallback((files: FileList | File[]) => {
+    const selected = Array.from(files)
+    const accepted: MobileAttachment[] = []
+    for (const file of selected) {
+      const limit = file.type.startsWith('image/') ? MAX_MOBILE_IMAGE_BYTES : MAX_MOBILE_ATTACHMENT_BYTES
+      if (!file.size || file.size > limit) {
+        const maxMb = Math.round(limit / (1024 * 1024))
+        setChat(current => ({ ...current, error: `${file.name} must be smaller than ${maxMb} MB.` }))
+        continue
+      }
+      accepted.push({
+        file,
+        id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`
+      })
+    }
+    if (accepted.length) {
+      setAttachments(current => [...current, ...accepted])
+      setChat(current => ({ ...current, error: null }))
+    }
+  }, [])
 
   return (
     <div className="mobile-chat-shell">
@@ -799,9 +874,37 @@ function ChatScreen({
         </button>
       )}
       <form className="mobile-composer" onSubmit={submit}>
-        <DesktopDocumentLink aria-label="Open files" className="mobile-icon-button" to="/files">
+        {!!attachments.length && (
+          <div className="mobile-attachment-list" aria-label="Selected attachments">
+            {attachments.map(attachment => (
+              <span className="mobile-attachment-chip" key={attachment.id}>
+                <FileUp />
+                <span>{attachment.file.name}</span>
+                <button
+                  aria-label={`Remove ${attachment.file.name}`}
+                  onClick={() => setAttachments(current => current.filter(item => item.id !== attachment.id))}
+                  type="button"
+                >
+                  <X />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <input
+          accept="image/*,.pdf,.txt,.md,.csv,.json,.yaml,.yml,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
+          className="mobile-file-picker"
+          multiple
+          onChange={event => {
+            if (event.currentTarget.files) selectAttachments(event.currentTarget.files)
+            event.currentTarget.value = ''
+          }}
+          ref={filePickerRef}
+          type="file"
+        />
+        <IconButton label="Add attachment" onClick={() => filePickerRef.current?.click()}>
           <Plus />
-        </DesktopDocumentLink>
+        </IconButton>
         <textarea
           aria-label="Message Hermes"
           disabled={!ready || chat.busy}
@@ -813,7 +916,7 @@ function ChatScreen({
         <button
           aria-label="Send message"
           className="mobile-send"
-          disabled={!ready || !draft.trim() || chat.busy}
+          disabled={!ready || (!draft.trim() && !attachments.length) || chat.busy}
           type="submit"
         >
           <Send />

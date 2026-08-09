@@ -209,6 +209,169 @@ describe('MobileApp', () => {
     expect(schedule).toMatch(/Aug|Today|Tomorrow/)
   })
 
+  it('opens an attachment picker from the chat composer', async () => {
+    await renderAt('/mobile/chat/new')
+
+    const picker = container.querySelector('input[type="file"]') as HTMLInputElement | null
+    const addButton = container.querySelector('button[aria-label="Add attachment"]') as HTMLButtonElement | null
+
+    expect(picker).not.toBeNull()
+    expect(picker?.multiple).toBe(true)
+    expect(picker?.accept).toContain('image/*')
+    expect(picker?.accept).toContain('.pdf')
+    expect(addButton).not.toBeNull()
+
+    const openPicker = vi.spyOn(picker as HTMLInputElement, 'click').mockImplementation(() => {})
+    addButton?.click()
+    expect(openPicker).toHaveBeenCalledOnce()
+  })
+
+  it('sends a selected image through the live Hermes session', async () => {
+    gatewayMocks.request.mockImplementation(async (method: string) => {
+      if (method === 'session.create') return { session_id: 'runtime-1', stored_session_id: 'stored-1' }
+      if (method === 'image.attach_bytes') return { attached: true, path: '/gateway/images/photo.png' }
+      return {}
+    })
+    await renderAt('/mobile/chat/new')
+
+    const picker = container.querySelector('input[type="file"]') as HTMLInputElement
+    const image = new File([new Uint8Array([1, 2, 3])], 'photo.png', { type: 'image/png' })
+    Object.defineProperty(picker, 'files', { configurable: true, value: [image] })
+    await act(async () => {
+      picker.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    expect(container.textContent).toContain('photo.png')
+    expect(container.querySelector('button[aria-label="Remove photo.png"]')).not.toBeNull()
+
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    const form = container.querySelector('form') as HTMLFormElement
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      valueSetter?.call(textarea, 'Describe this image')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await vi.waitFor(() => {
+        expect(gatewayMocks.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(true)
+      })
+    })
+
+    const attachCall = gatewayMocks.request.mock.calls.find(([method]) => method === 'image.attach_bytes')
+    const submitCall = gatewayMocks.request.mock.calls.find(([method]) => method === 'prompt.submit')
+    expect(attachCall).toEqual([
+      'image.attach_bytes',
+      expect.objectContaining({
+        content_base64: 'AQID',
+        filename: 'photo.png',
+        session_id: 'runtime-1'
+      })
+    ])
+    expect(submitCall).toEqual([
+      'prompt.submit',
+      { session_id: 'runtime-1', text: 'Describe this image' }
+    ])
+  })
+
+  it('stages a selected PDF as a gateway-readable file without requiring local PDF tools', async () => {
+    gatewayMocks.request.mockImplementation(async (method: string) => {
+      if (method === 'session.create') return { session_id: 'runtime-1', stored_session_id: 'stored-1' }
+      if (method === 'file.attach') {
+        return { attached: true, ref_text: '@file:.hermes/desktop-attachments/report.pdf' }
+      }
+      return {}
+    })
+    await renderAt('/mobile/chat/new')
+
+    const picker = container.querySelector('input[type="file"]') as HTMLInputElement
+    const pdf = new File([new TextEncoder().encode('%PDF-')], 'report.pdf', { type: 'application/pdf' })
+    Object.defineProperty(picker, 'files', { configurable: true, value: [pdf] })
+    await act(async () => {
+      picker.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    const form = container.querySelector('form') as HTMLFormElement
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      valueSetter?.call(textarea, 'Summarize this PDF')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await vi.waitFor(() => {
+        expect(gatewayMocks.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(true)
+      })
+    })
+
+    expect(gatewayMocks.request).toHaveBeenCalledWith(
+      'file.attach',
+      expect.objectContaining({
+        data_url: 'data:application/pdf;base64,JVBERi0=',
+        name: 'report.pdf',
+        path: 'report.pdf',
+        session_id: 'runtime-1'
+      })
+    )
+    expect(gatewayMocks.request).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: 'runtime-1',
+        text: '@file:.hermes/desktop-attachments/report.pdf\n\nSummarize this PDF'
+      }
+    )
+  })
+
+  it('stages a selected document and includes its gateway file reference in the prompt', async () => {
+    gatewayMocks.request.mockImplementation(async (method: string) => {
+      if (method === 'session.create') return { session_id: 'runtime-1', stored_session_id: 'stored-1' }
+      if (method === 'file.attach') {
+        return { attached: true, ref_text: '@file:.hermes/desktop-attachments/notes.txt' }
+      }
+      return {}
+    })
+    await renderAt('/mobile/chat/new')
+
+    const picker = container.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' })
+    Object.defineProperty(picker, 'files', { configurable: true, value: [file] })
+    await act(async () => {
+      picker.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    const form = container.querySelector('form') as HTMLFormElement
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      valueSetter?.call(textarea, 'Summarize the notes')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await vi.waitFor(() => {
+        expect(gatewayMocks.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(true)
+      })
+    })
+
+    expect(gatewayMocks.request).toHaveBeenCalledWith(
+      'file.attach',
+      expect.objectContaining({
+        data_url: 'data:text/plain;base64,aGVsbG8=',
+        name: 'notes.txt',
+        path: 'notes.txt',
+        session_id: 'runtime-1'
+      })
+    )
+    expect(gatewayMocks.request).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: 'runtime-1',
+        text: '@file:.hermes/desktop-attachments/notes.txt\n\nSummarize the notes'
+      }
+    )
+  })
+
   it('keeps a new-chat composer disabled until the gateway connection is ready', async () => {
     let finishConnect!: () => void
     gatewayMocks.connect.mockReturnValueOnce(new Promise<void>(resolve => {

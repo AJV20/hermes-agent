@@ -579,6 +579,54 @@
   width: 1rem;
   height: 1rem;
 }
+.mobile-attachment-list {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 0.4rem;
+  overflow-x: auto;
+  padding: 0 0.1rem;
+  scrollbar-width: none;
+}
+.mobile-attachment-chip {
+  flex: 0 0 auto;
+  max-width: min(17rem, 78vw);
+  min-height: 3rem;
+  padding: 0.35rem 0.35rem 0.35rem 0.55rem;
+  border: 1px solid var(--mobile-line);
+  border-radius: 0.8rem;
+  background: var(--mobile-panel);
+  color: var(--mobile-text);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.7rem;
+}
+.mobile-attachment-chip > svg {
+  width: 1rem;
+  color: var(--mobile-accent);
+}
+.mobile-attachment-chip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-attachment-chip button {
+  width: 3rem;
+  height: 3rem;
+  border: 0;
+  border-radius: 0.6rem;
+  background: transparent;
+  color: var(--mobile-muted);
+  display: grid;
+  place-items: center;
+}
+.mobile-attachment-chip button svg {
+  width: 0.9rem;
+}
+.mobile-file-picker {
+  display: none;
+}
 .mobile-composer {
   flex: 0 0 auto;
   min-height: calc(4.6rem + var(--mobile-safe-bottom-capped));
