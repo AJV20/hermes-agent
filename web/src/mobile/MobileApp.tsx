@@ -519,29 +519,51 @@ function ChatScreen({
   const shouldAutoFollowRef = useRef(true)
   const threadRef = useRef<HTMLDivElement | null>(null)
   const pendingPrependRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null)
+  const historyHydratedRef = useRef(false)
 
   useEffect(() => {
     let cancelled = false
     let reconnectAttempt = 0
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
-    const resumeAfterReconnect = async () => {
-      const resumableId = pendingStoredId.current || (!isNew ? storedSessionId : null)
-      if (resumableId) {
-        const resumed = await gateway.request<MobileResumeSnapshot>('session.resume', {
+    const hydrateResumableSession = async (resumableId: string) => {
+      const [storedResult, resumed] = await Promise.all([
+        historyHydratedRef.current
+          ? Promise.resolve({ ok: null as null })
+          : api.getSessionMessages(resumableId, profile).then(
+              stored => ({ ok: true as const, stored }),
+              () => ({ ok: false as const })
+            ),
+        gateway.request<MobileResumeSnapshot>('session.resume', {
           cols: 48,
           omit_messages: true,
           ...(profile ? { profile } : {}),
           session_id: resumableId,
           source: 'web'
         })
-        runtimeId.current = resumed.session_id
-        setChat(current => hydrateMobileResume({ ...current, error: null }, resumed))
+      ])
+      if (cancelled) return
+      runtimeId.current = resumed.session_id
+      if (storedResult.ok === true) {
+        const returned = storedResult.stored.pagination?.returned ?? storedResult.stored.messages.length
+        const limit = storedResult.stored.pagination?.limit ?? 500
+        historyHydratedRef.current = true
+        setHistoryPage({ hasEarlier: returned >= limit, loading: false, nextOffset: returned })
       }
+      setChat(current => hydrateMobileResume({
+        ...current,
+        error: storedResult.ok === false ? 'Could not load conversation history.' : null,
+        messages: storedResult.ok === true ? projectSessionMessages(storedResult.stored.messages) : current.messages
+      }, resumed))
+    }
+
+    const resumeAfterReconnect = async () => {
+      const resumableId = pendingStoredId.current || (!isNew ? storedSessionId : null)
+      if (resumableId) await hydrateResumableSession(resumableId)
+      else if (!cancelled) setChat(current => ({ ...current, error: null }))
       if (!cancelled) {
         setConnected(true)
         setReady(true)
-        setChat(current => ({ ...current, error: null }))
       }
     }
 
@@ -586,32 +608,9 @@ function ChatScreen({
           setReady(true)
           return
         }
-        const [storedResult, resumed] = await Promise.all([
-          api.getSessionMessages(storedSessionId, profile).then(
-            stored => ({ ok: true as const, stored }),
-            () => ({ ok: false as const })
-          ),
-          gateway.request<MobileResumeSnapshot>('session.resume', {
-            cols: 48,
-            omit_messages: true,
-            ...(profile ? { profile } : {}),
-            session_id: storedSessionId,
-            source: 'web'
-          })
-        ])
+        await hydrateResumableSession(storedSessionId)
         if (cancelled) return
-        runtimeId.current = resumed.session_id
         setReady(true)
-        if (storedResult.ok) {
-          const returned = storedResult.stored.pagination?.returned ?? storedResult.stored.messages.length
-          const limit = storedResult.stored.pagination?.limit ?? 500
-          setHistoryPage({ hasEarlier: returned >= limit, loading: false, nextOffset: returned })
-        }
-        setChat(current => hydrateMobileResume({
-          ...current,
-          error: storedResult.ok ? current.error : 'Could not load conversation history.',
-          messages: storedResult.ok ? projectSessionMessages(storedResult.stored.messages) : current.messages
-        }, resumed))
       })
       .catch((error: Error) => {
         if (!cancelled) {

@@ -464,6 +464,56 @@ describe('MobileApp', () => {
     }
   })
 
+  it('hydrates persisted history and live state when an existing chat reconnects after its initial connection fails', async () => {
+    vi.useFakeTimers()
+    try {
+      gatewayMocks.connect
+        .mockRejectedValueOnce(new Error('initial connection failed'))
+        .mockResolvedValueOnce(undefined)
+      apiMocks.getSessionMessages.mockResolvedValueOnce({
+        messages: [
+          { id: 41, role: 'user', content: 'Persisted question', timestamp: 1 } as never,
+          { id: 42, role: 'assistant', content: 'Persisted answer', timestamp: 2 } as never
+        ],
+        pagination: { limit: 500, offset: 0, order: 'latest', returned: 2 },
+        session_id: 'session-1'
+      })
+      gatewayMocks.request.mockImplementation(async (method: string) => {
+        if (method === 'session.resume') {
+          return {
+            inflight: {
+              assistant: 'Live partial answer',
+              streaming: true,
+              user: 'Current desktop prompt'
+            },
+            running: true,
+            session_id: 'runtime-resumed',
+            status: 'working'
+          }
+        }
+        return {}
+      })
+
+      await renderAt('/mobile/chat/session-1')
+      const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+      expect(textarea.disabled).toBe(true)
+      expect(apiMocks.getSessionMessages).not.toHaveBeenCalled()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500)
+      })
+
+      expect(apiMocks.getSessionMessages).toHaveBeenCalledWith('session-1', '')
+      expect(container.textContent).toContain('Persisted question')
+      expect(container.textContent).toContain('Persisted answer')
+      expect(container.textContent).toContain('Current desktop prompt')
+      expect(container.textContent).toContain('Live partial answer')
+      expect(textarea.disabled).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps the reading position during streaming and offers a jump to latest control', async () => {
     apiMocks.getSessionMessages.mockResolvedValueOnce({
       messages: [
