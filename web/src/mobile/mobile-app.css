@@ -391,11 +391,11 @@
   position: fixed;
   left: 0;
   right: 0;
-  bottom: 0;
+  bottom: calc(min(env(safe-area-inset-bottom, 0px), 1rem) - env(safe-area-inset-bottom, 0px));
   z-index: 20;
   box-sizing: border-box;
-  min-height: calc(4rem + min(env(safe-area-inset-bottom, 0px), 1rem));
-  padding: 0.35rem 0.45rem min(env(safe-area-inset-bottom, 0px), 1rem);
+  min-height: 4rem;
+  padding: 0.35rem 0.45rem;
   border-top: 1px solid var(--mobile-line);
   background: color-mix(in srgb, var(--mobile-bg) 94%, transparent);
   backdrop-filter: blur(18px);
