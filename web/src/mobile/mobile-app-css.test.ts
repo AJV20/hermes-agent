@@ -10,8 +10,11 @@ describe('mobile bottom navigation layout', () => {
     const link = styles.match(/\.mobile-bottom-nav a\s*\{([^}]*)\}/)?.[1] ?? ''
 
     expect(styles).toContain('--mobile-safe-bottom: env(safe-area-inset-bottom, 0px)')
+    expect(shell).toContain('position: relative')
     expect(shell).toContain('min-height: var(--mobile-app-height, 100dvh)')
     expect(shell).toContain('height: var(--mobile-app-height, 100dvh)')
+    expect(nav).toContain('position: absolute')
+    expect(nav).not.toContain('position: fixed')
     expect(nav).toContain('bottom: 0')
     expect(nav).toContain('height: calc(4rem + var(--mobile-safe-bottom-capped))')
     expect(nav).toContain('min-height: calc(4rem + var(--mobile-safe-bottom-capped))')
