@@ -17,6 +17,10 @@
   overflow: hidden;
 }
 .mobile-app-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  height: auto;
+  overflow: visible;
   display: flex;
   flex-direction: column;
 }
