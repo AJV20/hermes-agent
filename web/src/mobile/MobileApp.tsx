@@ -175,9 +175,9 @@ function useMobileViewportSync() {
   }, [])
 }
 
-function IconButton({ children, label, onClick }: { children: ReactNode; label: string; onClick?: () => void }) {
+function IconButton({ children, disabled = false, label, onClick }: { children: ReactNode; disabled?: boolean; label: string; onClick?: () => void }) {
   return (
-    <button className="mobile-icon-button" aria-label={label} onClick={onClick} type="button">
+    <button className="mobile-icon-button" aria-label={label} disabled={disabled} onClick={onClick} type="button">
       {children}
     </button>
   )
@@ -763,7 +763,6 @@ function ChatScreen({
               {
                 data_url: dataUrl,
                 name: attachment.file.name,
-                path: attachment.file.name,
                 session_id: sid
               }
             )
@@ -785,7 +784,10 @@ function ChatScreen({
       } catch (error) {
         submitInFlight.current = false
         setDraft(current => current.trim() ? current : text)
-        setAttachments(current => current.length ? current : pendingAttachments)
+        setAttachments(current => {
+          const currentIds = new Set(current.map(attachment => attachment.id))
+          return [...pendingAttachments.filter(attachment => !currentIds.has(attachment.id)), ...current]
+        })
         setChat(current => ({
           ...current,
           busy: false,
@@ -819,7 +821,7 @@ function ChatScreen({
   }, [])
 
   return (
-    <div className="mobile-chat-shell">
+    <div className={`mobile-chat-shell${attachments.length ? ' has-attachments' : ''}`}>
       <AppHeader
         back={() => navigate('/mobile/chats')}
         detail={connected ? 'Connected to Desktop' : 'Connecting…'}
@@ -894,6 +896,7 @@ function ChatScreen({
         <input
           accept="image/*,.pdf,.txt,.md,.csv,.json,.yaml,.yml,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
           className="mobile-file-picker"
+          disabled={chat.busy || submitInFlight.current}
           multiple
           onChange={event => {
             if (event.currentTarget.files) selectAttachments(event.currentTarget.files)
@@ -902,7 +905,7 @@ function ChatScreen({
           ref={filePickerRef}
           type="file"
         />
-        <IconButton label="Add attachment" onClick={() => filePickerRef.current?.click()}>
+        <IconButton disabled={chat.busy || submitInFlight.current} label="Add attachment" onClick={() => filePickerRef.current?.click()}>
           <Plus />
         </IconButton>
         <textarea

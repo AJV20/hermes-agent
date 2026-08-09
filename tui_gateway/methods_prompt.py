@@ -657,8 +657,9 @@ def _(rid, params: dict) -> dict:
       session_id (str, required)
       path (str): client/host path of the file (used for naming + local-mode
         gateway-visible resolution).
-      data_url (str): ``data:<mime>;base64,<b64>`` upload of the file bytes,
-        required when the path isn't visible to the gateway.
+      data_url (str): ``data:<mime>;base64,<b64>`` upload of the file bytes.
+        When supplied, these bytes are authoritative and ``path`` is used only
+        as a fallback naming hint, never as an alternate content source.
       name (str, optional): preferred filename.
     """
     session, err = _sess(params, rid)

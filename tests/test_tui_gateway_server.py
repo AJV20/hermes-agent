@@ -8136,6 +8136,43 @@ def test_file_attach_uploads_remote_file_into_session_workspace(monkeypatch, tmp
         server._sessions.pop("sid", None)
 
 
+def test_file_attach_prefers_uploaded_bytes_over_same_named_gateway_file(monkeypatch, tmp_path):
+    """Browser bytes are authoritative even when the gateway can resolve the client name."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home = tmp_path / "home"
+    gateway_file = tmp_path / "report.txt"
+    gateway_file.write_text("GATEWAY-LOCAL-SECRET", encoding="utf-8")
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: gateway_file
+
+    server._sessions["sid"] = _session(cwd=str(workspace), profile_home=str(home))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "path": "report.txt",
+                    "name": "report.txt",
+                    "data_url": "data:text/plain;base64,TU9CSUxFLVBJQ0tFRC1CWVRFUw==",
+                },
+            }
+        )
+
+        stored = home / "attachments" / "report.txt"
+        assert resp["result"]["attached"] is True
+        assert resp["result"]["uploaded"] is True
+        assert stored.read_text(encoding="utf-8") == "MOBILE-PICKED-BYTES"
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, tmp_path):
     """Local case: gateway can see the file but it's outside the workspace → copy in."""
     workspace = tmp_path / "workspace"

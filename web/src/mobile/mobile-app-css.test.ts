@@ -53,4 +53,12 @@ describe('mobile bottom navigation layout', () => {
     expect(attachmentRemove).toContain('width: 3rem')
     expect(attachmentRemove).toContain('height: 3rem')
   })
+
+  it('raises Jump to latest above the attachment composer row', () => {
+    const base = styles.match(/\.mobile-jump-latest\s*\{([^}]*)\}/)?.[1] ?? ''
+    const withAttachments = styles.match(/\.mobile-chat-shell\.has-attachments \.mobile-jump-latest\s*\{([^}]*)\}/)?.[1] ?? ''
+
+    expect(base).toContain('bottom: calc(5.35rem + var(--mobile-safe-bottom-capped))')
+    expect(withAttachments).toContain('bottom: calc(8.6rem + var(--mobile-safe-bottom-capped))')
+  })
 })

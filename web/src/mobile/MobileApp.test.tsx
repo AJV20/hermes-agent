@@ -313,10 +313,11 @@ describe('MobileApp', () => {
       expect.objectContaining({
         data_url: 'data:application/pdf;base64,JVBERi0=',
         name: 'report.pdf',
-        path: 'report.pdf',
         session_id: 'runtime-1'
       })
     )
+    const fileAttachCall = gatewayMocks.request.mock.calls.find(([method]) => method === 'file.attach')
+    expect(fileAttachCall?.[1]).not.toHaveProperty('path')
     expect(gatewayMocks.request).toHaveBeenCalledWith(
       'prompt.submit',
       {
@@ -362,10 +363,11 @@ describe('MobileApp', () => {
       expect.objectContaining({
         data_url: 'data:text/plain;base64,aGVsbG8=',
         name: 'notes.txt',
-        path: 'notes.txt',
         session_id: 'runtime-1'
       })
     )
+    const fileAttachCall = gatewayMocks.request.mock.calls.find(([method]) => method === 'file.attach')
+    expect(fileAttachCall?.[1]).not.toHaveProperty('path')
     expect(gatewayMocks.request).toHaveBeenCalledWith(
       'prompt.submit',
       {
@@ -373,6 +375,45 @@ describe('MobileApp', () => {
         text: '@file:.hermes/desktop-attachments/notes.txt\n\nSummarize the notes'
       }
     )
+  })
+
+  it('preserves pending and newly selected attachments when an upload fails', async () => {
+    let rejectAttach!: (error: Error) => void
+    gatewayMocks.request.mockImplementation((method: string) => {
+      if (method === 'session.create') return Promise.resolve({ session_id: 'runtime-1', stored_session_id: 'stored-1' })
+      if (method === 'file.attach') {
+        return new Promise((_resolve, reject) => {
+          rejectAttach = reject
+        })
+      }
+      return Promise.resolve({})
+    })
+    await renderAt('/mobile/chat/new')
+
+    const picker = container.querySelector('input[type="file"]') as HTMLInputElement
+    const form = container.querySelector('form') as HTMLFormElement
+    const first = new File(['first'], 'first.txt', { type: 'text/plain' })
+    Object.defineProperty(picker, 'files', { configurable: true, value: [first] })
+    await act(async () => picker.dispatchEvent(new Event('change', { bubbles: true })))
+
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await vi.waitFor(() => expect(gatewayMocks.request.mock.calls.some(([method]) => method === 'file.attach')).toBe(true))
+    })
+    expect(picker.disabled).toBe(true)
+    expect((container.querySelector('button[aria-label="Add attachment"]') as HTMLButtonElement).disabled).toBe(true)
+
+    const second = new File(['second'], 'second.txt', { type: 'text/plain' })
+    Object.defineProperty(picker, 'files', { configurable: true, value: [second] })
+    await act(async () => picker.dispatchEvent(new Event('change', { bubbles: true })))
+    await act(async () => {
+      rejectAttach(new Error('upload failed'))
+      await Promise.resolve()
+    })
+
+    expect(container.textContent).toContain('first.txt')
+    expect(container.textContent).toContain('second.txt')
+    expect(container.textContent).toContain('upload failed')
   })
 
   it('keeps a new-chat composer disabled until the gateway connection is ready', async () => {
