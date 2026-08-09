@@ -806,6 +806,93 @@
   font-size: 0.7rem;
   line-height: 1.35;
 }
+.mobile-task-filters {
+  margin-bottom: 0.7rem;
+  padding: 0.2rem;
+  border: 1px solid var(--mobile-line);
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--mobile-panel) 82%, transparent);
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.2rem;
+}
+.mobile-task-filters button {
+  min-height: 2.75rem;
+  padding: 0 0.25rem;
+  border: 0;
+  border-radius: 0.65rem;
+  background: transparent;
+  color: var(--mobile-muted);
+  font: inherit;
+  font-size: 0.66rem;
+  font-weight: 750;
+}
+.mobile-task-filters button.is-active {
+  background: var(--mobile-panel-strong);
+  color: var(--mobile-text);
+  box-shadow: 0 0.2rem 0.7rem rgba(0, 0, 0, 0.2);
+}
+.mobile-attention-row {
+  margin-top: 0.55rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid color-mix(in srgb, #f2b659 22%, transparent);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.55rem;
+}
+.mobile-attention-row span,
+.mobile-attention-row small {
+  min-width: 0;
+  display: block;
+}
+.mobile-attention-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-attention-row small {
+  margin-top: 0.18rem;
+  color: var(--mobile-muted);
+  font-size: 0.66rem;
+  line-height: 1.35;
+}
+.mobile-attention-row button,
+.mobile-inline-error button {
+  min-height: 2.75rem;
+  padding: 0 0.7rem;
+  border: 1px solid var(--mobile-line);
+  border-radius: 0.7rem;
+  background: var(--mobile-panel-strong);
+  color: var(--mobile-text);
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+.mobile-inline-error {
+  margin-bottom: 0.7rem;
+  padding: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--mobile-danger) 40%, var(--mobile-line));
+  border-radius: 0.8rem;
+  color: #ffb6b6;
+  font-size: 0.7rem;
+}
+.mobile-task-advanced-link {
+  margin-top: 0.8rem;
+}
+.mobile-task-error-sheet pre {
+  max-height: min(52dvh, 28rem);
+  margin: 0;
+  padding: 0.8rem;
+  border: 1px solid var(--mobile-line);
+  border-radius: 0.8rem;
+  background: var(--mobile-bg);
+  color: var(--mobile-muted);
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 0.67rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 .mobile-sheet-backdrop {
   position: fixed;
   inset: 0;

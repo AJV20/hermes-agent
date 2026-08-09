@@ -282,6 +282,9 @@ describe('MobileApp', () => {
       { id: 'paused', enabled: false, name: 'Paused task', next_run_at: '2026-08-09T08:00:00-04:00' }
     ])
     await renderAt('/mobile/tasks')
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Show all tasks"]') as HTMLButtonElement).click()
+    })
 
     const names = Array.from(container.querySelectorAll('.mobile-task-card strong')).map(node => node.textContent)
     const schedule = container.querySelector('.mobile-task-card small')?.textContent ?? ''
@@ -310,6 +313,40 @@ describe('MobileApp', () => {
     })
     expect(apiMocks.pauseCronJob).toHaveBeenCalledWith('daily', 'default')
     expect(container.textContent).toContain('Paused')
+  })
+
+  it('summarizes task failures and reveals technical detail only on request', async () => {
+    const detail = 'Script exited with code 1\nTraceback: private implementation detail '.repeat(8)
+    apiMocks.getCronJobs.mockResolvedValueOnce([
+      {
+        id: 'broken',
+        enabled: true,
+        name: 'Restore verification',
+        last_status: 'failed',
+        last_error: detail
+      } as never
+    ])
+    await renderAt('/mobile/tasks')
+
+    expect(container.textContent).toContain('1 task needs attention')
+    expect(container.textContent).toContain('Script exited with code 1')
+    expect(container.textContent).not.toContain('private implementation detail private implementation detail')
+    const view = container.querySelector('button[aria-label="View error for Restore verification"]') as HTMLButtonElement
+    expect(view).not.toBeNull()
+    await act(async () => view.click())
+    expect(container.querySelector('[aria-label="Task error details for Restore verification"]')?.textContent).toContain(detail)
+  })
+
+  it('filters the task list for paused schedules', async () => {
+    apiMocks.getCronJobs.mockResolvedValueOnce([
+      { id: 'active', enabled: true, name: 'Active task' } as never,
+      { id: 'paused', enabled: false, name: 'Paused task' } as never
+    ])
+    await renderAt('/mobile/tasks')
+    const pausedFilter = container.querySelector('button[aria-label="Show paused tasks"]') as HTMLButtonElement
+    await act(async () => pausedFilter.click())
+    expect(container.textContent).toContain('Paused task')
+    expect(container.textContent).not.toContain('Active task')
   })
 
   it('searches conversations from the mobile chats screen', async () => {
