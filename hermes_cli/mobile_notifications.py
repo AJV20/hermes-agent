@@ -140,6 +140,17 @@ def set_notification_state(home: Path, notification_id: str, *, field: str) -> O
     return _row(row)
 
 
+def dismiss_notification_by_dedupe_key(home: Path, dedupe_key: str) -> bool:
+    """Dismiss a keyed gateway notice when its recovery event arrives."""
+    with closing(_connect(home)) as conn:
+        changed = conn.execute(
+            "UPDATE mobile_notifications SET dismissed_at = COALESCE(dismissed_at, ?) WHERE dedupe_key = ?",
+            (time.time(), dedupe_key),
+        ).rowcount
+        conn.commit()
+    return bool(changed)
+
+
 def upsert_push_subscription(home: Path, *, endpoint: str, p256dh: str, auth: str) -> None:
     """Persist an authenticated browser subscription; delivery is configured separately."""
     now = time.time()

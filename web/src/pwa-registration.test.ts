@@ -40,7 +40,7 @@ describe('registerHermesPwa', () => {
           if (type === 'controllerchange') controllerChange.add(handler)
         },
         getRegistration,
-        removeEventListener: (type: string, handler: () => void) => controllerChange.delete(handler)
+        removeEventListener: (_type: string, handler: () => void) => controllerChange.delete(handler)
       }
     })
     const reload = vi.fn()

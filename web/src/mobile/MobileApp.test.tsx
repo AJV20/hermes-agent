@@ -6,9 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const apiMocks = vi.hoisted(() => ({
   deleteSession: vi.fn(async () => ({ ok: true })),
+  dismissMobileNotification: vi.fn(async (id: string) => ({ id })),
   getCronJobs: vi.fn(async () => [
     { id: 'daily', enabled: true, name: 'Morning briefing', next_run_at: '2026-08-09T11:00:00Z' }
   ]),
+  getMobileNotifications: vi.fn(async () => ({ items: [], total: 0 })),
   pauseCronJob: vi.fn(async (id: string) => ({ id, enabled: false, name: 'Morning briefing' })),
   resumeCronJob: vi.fn(async (id: string) => ({ id, enabled: true, name: 'Morning briefing' })),
   triggerCronJob: vi.fn(async (id: string) => ({ id, enabled: true, name: 'Morning briefing', state: 'running' })),
@@ -48,6 +50,7 @@ const apiMocks = vi.hoisted(() => ({
     gateway_state: 'running',
     version: '1.0.0'
   })),
+  markMobileNotificationRead: vi.fn(async (id: string) => ({ id, read_at: 1 })),
   renameSession: vi.fn(async (_id: string, title: string) => ({ ok: true, title })),
   searchSessions: vi.fn(async (): Promise<{ results: unknown[] }> => ({ results: [] })),
   updateSession: vi.fn(async () => ({ ok: true }))
@@ -108,9 +111,11 @@ beforeEach(() => {
   document.body.append(container)
   root = createRoot(container)
   apiMocks.deleteSession.mockReset().mockResolvedValue({ ok: true })
+  apiMocks.dismissMobileNotification.mockReset().mockImplementation(async (id: string) => ({ id }))
   apiMocks.getCronJobs.mockReset().mockResolvedValue([
     { id: 'daily', enabled: true, name: 'Morning briefing', next_run_at: '2026-08-09T11:00:00Z' }
   ])
+  apiMocks.getMobileNotifications.mockReset().mockResolvedValue({ items: [], total: 0 })
   apiMocks.pauseCronJob.mockReset().mockImplementation(async (id: string) => ({ id, enabled: false, name: 'Morning briefing' }))
   apiMocks.resumeCronJob.mockReset().mockImplementation(async (id: string) => ({ id, enabled: true, name: 'Morning briefing' }))
   apiMocks.triggerCronJob.mockReset().mockImplementation(async (id: string) => ({
@@ -151,6 +156,7 @@ beforeEach(() => {
     gateway_state: 'running',
     version: '1.0.0'
   })
+  apiMocks.markMobileNotificationRead.mockReset().mockImplementation(async (id: string) => ({ id, read_at: 1 }))
   apiMocks.renameSession.mockReset().mockImplementation(async (_id: string, title: string) => ({ ok: true, title }))
   apiMocks.searchSessions.mockReset().mockResolvedValue({ results: [] })
   apiMocks.updateSession.mockReset().mockResolvedValue({ ok: true })
@@ -227,7 +233,50 @@ describe('MobileApp', () => {
     })
 
     expect(container.textContent).toContain('A new Hermes Mobile update is ready.')
-    expect(container.querySelector('button[aria-label="Reload Hermes Mobile update"]')).not.toBeNull()
+    expect(container.querySelector('button[aria-label="Install Hermes Mobile update"]')).not.toBeNull()
+    const later = container.querySelector('button[aria-label="Defer Hermes Mobile update"]') as HTMLButtonElement
+    expect(later).not.toBeNull()
+    await act(async () => later.click())
+    expect(container.textContent).not.toContain('A new Hermes Mobile update is ready.')
+  })
+
+  it('loads, marks, and dismisses durable notifications within the selected profile', async () => {
+    profileMocks.profile = 'mabel'
+    const notification = {
+      body: 'The scheduled backup completed.',
+      created_at: 1,
+      dedupe_key: 'backup:complete',
+      dismissed_at: null,
+      id: 'notice-1',
+      level: 'success',
+      profile: 'mabel',
+      read_at: null,
+      session_id: null,
+      target: null,
+      title: 'Backup complete',
+      type: 'backup'
+    }
+    apiMocks.getMobileNotifications.mockResolvedValueOnce({ items: [notification as never], total: 1 })
+    apiMocks.markMobileNotificationRead.mockResolvedValueOnce({ ...notification, read_at: 2 })
+    apiMocks.dismissMobileNotification.mockResolvedValueOnce({ ...notification, dismissed_at: 3 } as never)
+
+    await renderAt('/mobile/notifications')
+    expect(apiMocks.getMobileNotifications).toHaveBeenCalledWith('mabel')
+    expect(container.textContent).toContain('Backup complete')
+    expect(container.textContent).toContain('The scheduled backup completed.')
+
+    await act(async () => {
+      ;(container.querySelector('.mobile-notification-open') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    expect(apiMocks.markMobileNotificationRead).toHaveBeenCalledWith('notice-1', 'mabel')
+
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Dismiss Backup complete"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    expect(apiMocks.dismissMobileNotification).toHaveBeenCalledWith('notice-1', 'mabel')
+    expect(container.textContent).not.toContain('Backup complete')
   })
 
   it('uses normal document anchors for cross-shell desktop destinations', async () => {

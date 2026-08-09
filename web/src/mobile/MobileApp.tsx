@@ -1,6 +1,7 @@
 import {
   ArrowDown,
   ArrowLeft,
+  Bell,
   Bot,
   Camera,
   CheckCircle2,
@@ -36,7 +37,7 @@ import { Link, Navigate, useLocation, useNavigate } from 'react-router'
 
 import { Markdown } from '@/components/Markdown'
 import { useProfileScope } from '@/contexts/useProfileScope'
-import { api, HERMES_BASE_PATH, type CronJob, type SessionInfo, type StatusResponse } from '@/lib/api'
+import { api, HERMES_BASE_PATH, type CronJob, type MobileNotification, type SessionInfo, type StatusResponse } from '@/lib/api'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { GatewayClient, type GatewayEvent } from '@/lib/gatewayClient'
 import {
@@ -52,6 +53,7 @@ import { shareMessageText } from './chat/message-actions'
 import { getSpeechRecognitionConstructor, type SpeechRecognitionConstructor, type SpeechRecognitionLike } from './composer/speech-recognition'
 import { createMobileAttachment, revokeAttachmentPreview, type MobileAttachment } from './media/attachment-state'
 import { syncMobileViewportHeight } from './mobile-viewport'
+import { HERMES_PWA_UPDATE_READY_EVENT, requestHermesPwaUpdate } from '../pwa'
 import './mobile-app.css'
 
 const EMPTY_CHAT: MobileChatState = {
@@ -132,6 +134,7 @@ function routeTab(pathname: string): 'chats' | 'home' | 'more' | 'tasks' {
   if (pathname.startsWith('/mobile/chat')) return 'chats'
   if (pathname.startsWith('/mobile/chats')) return 'chats'
   if (pathname.startsWith('/mobile/tasks')) return 'tasks'
+  if (pathname.startsWith('/mobile/notifications')) return 'more'
   if (pathname.startsWith('/mobile/more')) return 'more'
   return 'home'
 }
@@ -231,27 +234,32 @@ function useMobileViewportSync() {
   }, [])
 }
 
-function usePwaUpdateReady(): boolean {
+function usePwaUpdateReady(): [boolean, () => void] {
   const [ready, setReady] = useState(false)
   useEffect(() => {
-    if (!('serviceWorker' in navigator)) return
+    const onReady = () => setReady(true)
     const onMessage = (event: MessageEvent) => {
       if (event.data?.type === 'HERMES_PWA_UPDATE_READY') setReady(true)
     }
-    navigator.serviceWorker.addEventListener('message', onMessage)
-    return () => navigator.serviceWorker.removeEventListener('message', onMessage)
+    window.addEventListener(HERMES_PWA_UPDATE_READY_EVENT, onReady)
+    navigator.serviceWorker?.addEventListener('message', onMessage)
+    return () => {
+      window.removeEventListener(HERMES_PWA_UPDATE_READY_EVENT, onReady)
+      navigator.serviceWorker?.removeEventListener('message', onMessage)
+    }
   }, [])
-  return ready
+  return [ready, () => setReady(false)]
 }
 
-function PwaUpdateBanner({ visible }: { visible: boolean }) {
+function PwaUpdateBanner({ onLater, visible }: { onLater: () => void; visible: boolean }) {
   if (!visible) return null
   return (
     <aside className="mobile-update-banner" role="status">
       <span>A new Hermes Mobile update is ready.</span>
-      <button aria-label="Reload Hermes Mobile update" onClick={() => window.location.reload()} type="button">
-        Update now
-      </button>
+      <div>
+        <button aria-label="Install Hermes Mobile update" onClick={() => void requestHermesPwaUpdate()} type="button">Update now</button>
+        <button aria-label="Defer Hermes Mobile update" className="is-secondary" onClick={onLater} type="button">Later</button>
+      </div>
     </aside>
   )
 }
@@ -933,8 +941,99 @@ function TasksScreen({ jobs, phase, profile }: { jobs: CronJob[]; phase: LoadPha
   )
 }
 
+function NotificationsScreen({ profile }: { profile: string }) {
+  const navigate = useNavigate()
+  const [items, setItems] = useState<MobileNotification[]>([])
+  const [phase, setPhase] = useState<LoadPhase>('loading')
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    api.getMobileNotifications(profile).then(
+      response => {
+        if (cancelled) return
+        setItems(response.items)
+        setPhase('ready')
+      },
+      () => {
+        if (!cancelled) setPhase('error')
+      }
+    )
+    return () => { cancelled = true }
+  }, [profile])
+
+  const markRead = useCallback(async (notification: MobileNotification) => {
+    if (notification.read_at) return
+    try {
+      const updated = await api.markMobileNotificationRead(notification.id, profile)
+      setItems(current => current.map(item => item.id === updated.id ? updated : item))
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not mark the notification read.')
+    }
+  }, [profile])
+
+  const dismiss = useCallback(async (notification: MobileNotification) => {
+    try {
+      await api.dismissMobileNotification(notification.id, profile)
+      setItems(current => current.filter(item => item.id !== notification.id))
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not dismiss the notification.')
+    }
+  }, [profile])
+
+  const unread = items.filter(item => !item.read_at).length
+  return (
+    <>
+      <AppHeader back={() => navigate('/mobile/more')} detail={unread ? `${unread} unread` : 'All caught up'} title="Notifications" />
+      <main className="mobile-screen mobile-notification-screen">
+        <div className="mobile-page-heading">
+          <div>
+            <p className="mobile-eyebrow">Hermes activity</p>
+            <h1>Notifications</h1>
+          </div>
+        </div>
+        <section className="mobile-notification-privacy">
+          <Bell />
+          <span><strong>Private by design</strong><small>Notification details stay behind your authenticated Hermes dashboard.</small></span>
+        </section>
+        {error && <div className="mobile-inline-error" role="alert">{error}</div>}
+        {phase === 'loading' && <div className="mobile-empty-card" aria-busy="true">Loading notifications…</div>}
+        {phase === 'error' && <div className="mobile-empty-card" role="alert">Could not load notifications.</div>}
+        {phase === 'ready' && !items.length && <div className="mobile-empty-card">No notifications need your attention.</div>}
+        {phase === 'ready' && !!items.length && (
+          <div className="mobile-notification-list">
+            {items.map(notification => {
+              const content = (
+                <>
+                  <span className={`mobile-notification-dot is-${notification.level}${notification.read_at ? ' is-read' : ''}`} />
+                  <span className="mobile-notification-copy">
+                    <strong>{notification.title}</strong>
+                    <small>{notification.body}</small>
+                    <time>{relativeTime(notification.created_at)}</time>
+                  </span>
+                </>
+              )
+              return (
+                <article className={notification.read_at ? 'is-read' : ''} key={notification.id}>
+                  {notification.target ? (
+                    <Link onClick={() => void markRead(notification)} to={notification.target}>{content}</Link>
+                  ) : (
+                    <button className="mobile-notification-open" onClick={() => void markRead(notification)} type="button">{content}</button>
+                  )}
+                  <button aria-label={`Dismiss ${notification.title}`} className="mobile-notification-dismiss" onClick={() => void dismiss(notification)} type="button"><X /></button>
+                </article>
+              )
+            })}
+          </div>
+        )}
+      </main>
+    </>
+  )
+}
+
 function MoreScreen() {
   const links = [
+    { icon: Bell, label: 'Notifications', to: '/mobile/notifications' },
     { icon: Bot, label: 'Models and capabilities', to: '/models' },
     { icon: FileUp, label: 'Files', to: '/files' },
     { icon: Sparkles, label: 'Skills', to: '/skills' },
@@ -953,12 +1052,11 @@ function MoreScreen() {
         <div className="mobile-more-list">
           {links.map(item => {
             const Icon = item.icon
-            return (
-              <DesktopDocumentLink key={item.to} to={item.to}>
-                <Icon />
-                <strong>{item.label}</strong>
-                <ChevronRight />
-              </DesktopDocumentLink>
+            const content = <><Icon /><strong>{item.label}</strong><ChevronRight /></>
+            return item.to.startsWith('/mobile/') ? (
+              <Link key={item.to} to={item.to}>{content}</Link>
+            ) : (
+              <DesktopDocumentLink key={item.to} to={item.to}>{content}</DesktopDocumentLink>
             )
           })}
         </div>
@@ -1644,7 +1742,7 @@ function ChatScreen({
 
 export function MobileApp() {
   useMobileViewportSync()
-  const updateReady = usePwaUpdateReady()
+  const [updateReady, deferUpdate] = usePwaUpdateReady()
   const { pathname } = useLocation()
   const { currentProfile, profile } = useProfileScope()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
@@ -1763,7 +1861,7 @@ export function MobileApp() {
           profile={profile}
           storedSessionId={storedSessionId}
         />
-        <PwaUpdateBanner visible={updateReady} />
+        <PwaUpdateBanner onLater={deferUpdate} visible={updateReady} />
       </>
     )
   }
@@ -1795,9 +1893,9 @@ export function MobileApp() {
         />
       )}
       {active === 'tasks' && <TasksScreen jobs={orderedCronJobs} phase={tasksPhase} profile={selectedProfile} />}
-      {active === 'more' && <MoreScreen />}
+      {active === 'more' && (pathname.startsWith('/mobile/notifications') ? <NotificationsScreen key={profile || 'default'} profile={profile} /> : <MoreScreen />)}
       <BottomNavigation active={active} />
-      <PwaUpdateBanner visible={updateReady} />
+      <PwaUpdateBanner onLater={deferUpdate} visible={updateReady} />
     </div>
   )
 }

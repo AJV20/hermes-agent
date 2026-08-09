@@ -133,6 +133,34 @@ describe("api session management", () => {
   });
 });
 
+describe("api mobile notifications", () => {
+  it("lists and mutates notifications within the selected profile", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ items: [], total: 0 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getMobileNotifications("mabel", { includeDismissed: false, limit: 25 });
+    await api.markMobileNotificationRead("notice:1", "mabel");
+    await api.dismissMobileNotification("notice:1", "mabel");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/mobile/notifications?limit=25&include_dismissed=false&profile=mabel",
+      expect.objectContaining({ credentials: "include" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/mobile/notifications/notice%3A1/read?profile=mabel",
+      expect.objectContaining({ credentials: "include", method: "POST" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/mobile/notifications/notice%3A1/dismiss?profile=mabel",
+      expect.objectContaining({ credentials: "include", method: "POST" }),
+    );
+  });
+});
+
 describe("api.getModelOptions", () => {
   it("requests a live model refresh when asked", async () => {
     vi.stubGlobal("window", {});

@@ -10,6 +10,6 @@ describe('getSpeechRecognitionConstructor', () => {
   it('uses the webkit-prefixed implementation when that is all the browser provides', () => {
     const WebkitSpeechRecognition = class {}
 
-    expect(getSpeechRecognitionConstructor({ webkitSpeechRecognition: WebkitSpeechRecognition })).toBe(WebkitSpeechRecognition)
+    expect(getSpeechRecognitionConstructor({ webkitSpeechRecognition: WebkitSpeechRecognition as never })).toBe(WebkitSpeechRecognition)
   })
 })

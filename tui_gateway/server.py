@@ -1570,7 +1570,57 @@ def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
     return {"jsonrpc": "2.0", "method": "event", "params": params}
 
 
+def _persist_mobile_notification_event(event: str, sid: str, payload: dict | None) -> None:
+    """Persist gateway notices before live fan-out; failures never block the agent."""
+    if event not in {"notification.show", "notification.clear"} or not payload:
+        return
+    try:
+        with _sessions_lock:
+            session = dict(_sessions.get(sid) or {})
+        if not session:
+            return
+        profile_home = session.get("profile_home")
+        home = Path(profile_home) if profile_home else get_hermes_home()
+        profile = Path(profile_home).name if profile_home else _current_profile_name()
+        raw_key = str(payload.get("key") or payload.get("id") or "").strip()
+        if not raw_key:
+            return
+        dedupe_key = f"gateway:{hashlib.sha256(raw_key.encode('utf-8')).hexdigest()[:24]}"
+        if event == "notification.clear":
+            from hermes_cli.mobile_notifications import dismiss_notification_by_dedupe_key
+
+            dismiss_notification_by_dedupe_key(home, dedupe_key)
+            return
+
+        from hermes_cli.mobile_notifications import upsert_notification
+        from urllib.parse import quote
+
+        text = str(payload.get("text") or "Hermes has an update.").strip()
+        if len(text) > 1000:
+            text = f"{text[:997]}…"
+        raw_level = str(payload.get("level") or "info").lower()
+        level = raw_level if raw_level in {"error", "info", "success", "warning"} else "info"
+        kind = str(payload.get("kind") or "notice").strip().lower()
+        safe_kind = "".join(character for character in kind if character.isalnum() or character in "._-")[:64] or "notice"
+        session_key = str(session.get("session_key") or "").strip() or None
+        target = f"/mobile/chat/{quote(session_key, safe='')}" if session_key else "/mobile/notifications"
+        upsert_notification(
+            home,
+            body=text,
+            dedupe_key=dedupe_key,
+            level=level,
+            profile=profile,
+            session_id=session_key,
+            target=target,
+            title=f"Hermes {safe_kind.replace('_', ' ')}"[:160],
+            type=safe_kind,
+        )
+    except Exception:
+        logger.debug("failed to persist mobile notification event", exc_info=True)
+
+
 def _emit(event: str, sid: str, payload: dict | None = None):
+    _persist_mobile_notification_event(event, sid, payload)
     write_json(_event_frame(event, sid, payload))
 
 

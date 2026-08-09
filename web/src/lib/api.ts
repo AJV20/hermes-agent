@@ -457,6 +457,25 @@ export const api = {
     }),
   renameSession: (id: string, title: string, profile = getManagementProfile()) =>
     api.updateSession(id, { title }, profile),
+  getMobileNotifications: (
+    profile = getManagementProfile(),
+    options: { includeDismissed?: boolean; limit?: number } = {},
+  ) => {
+    const limit = Math.min(100, Math.max(1, Math.floor(options.limit ?? 50)));
+    let url = `/api/mobile/notifications?limit=${limit}&include_dismissed=${Boolean(options.includeDismissed)}`;
+    url = appendProfileParam(url, profile);
+    return fetchJSON<MobileNotificationsResponse>(url);
+  },
+  markMobileNotificationRead: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<MobileNotification>(
+      appendProfileParam(`/api/mobile/notifications/${encodeURIComponent(id)}/read`, profile),
+      { method: "POST" },
+    ),
+  dismissMobileNotification: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<MobileNotification>(
+      appendProfileParam(`/api/mobile/notifications/${encodeURIComponent(id)}/dismiss`, profile),
+      { method: "POST" },
+    ),
   getSessionStats: (profile = getManagementProfile()) =>
     fetchJSON<SessionStoreStats>(appendProfileParam("/api/sessions/stats", profile)),
   exportSessionUrl: (id: string, profile = getManagementProfile()) =>
@@ -1907,6 +1926,26 @@ export interface StatusResponse {
   latest_config_version: number;
   release_date: string;
   version: string;
+}
+
+export interface MobileNotification {
+  body: string;
+  created_at: number;
+  dedupe_key: string | null;
+  dismissed_at: number | null;
+  id: string;
+  level: "error" | "info" | "success" | "warning";
+  profile: string;
+  read_at: number | null;
+  session_id: string | null;
+  target: string | null;
+  title: string;
+  type: string;
+}
+
+export interface MobileNotificationsResponse {
+  items: MobileNotification[];
+  total: number;
 }
 
 export interface SessionInfo {
