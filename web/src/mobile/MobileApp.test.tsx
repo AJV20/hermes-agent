@@ -41,6 +41,7 @@ const apiMocks = vi.hoisted(() => ({
 
 const gatewayMocks = vi.hoisted(() => ({
   connect: vi.fn(),
+  eventHandler: null as ((event: { payload?: unknown; session_id?: string; type: string }) => void) | null,
   request: vi.fn(),
   stateHandler: null as ((state: string) => void) | null
 }))
@@ -56,7 +57,8 @@ vi.mock('@/lib/gatewayClient', () => ({
     connect() {
       return gatewayMocks.connect()
     }
-    onAny() {
+    onAny(handler: (event: { payload?: unknown; session_id?: string; type: string }) => void) {
+      gatewayMocks.eventHandler = handler
       return () => {}
     }
     onState(handler: (state: string) => void) {
@@ -96,6 +98,7 @@ beforeEach(() => {
     return {}
   })
   gatewayMocks.connect.mockResolvedValue(undefined)
+  gatewayMocks.eventHandler = null
   gatewayMocks.stateHandler = null
   profileMocks.profile = ''
   profileMocks.currentProfile = 'default'
@@ -232,6 +235,71 @@ describe('MobileApp', () => {
     expect(textarea.value).toBe('Keep this while reconnecting')
   })
 
+  it('reconnects with bounded backoff and re-enables the preserved draft', async () => {
+    vi.useFakeTimers()
+    try {
+      gatewayMocks.connect
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('still offline'))
+        .mockResolvedValueOnce(undefined)
+      await renderAt('/mobile/chat/new')
+      const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+      await act(async () => {
+        const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+        valueSetter?.call(textarea, 'Send after reconnect')
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        gatewayMocks.stateHandler?.('closed')
+      })
+      expect(textarea.disabled).toBe(true)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500)
+      })
+      expect(gatewayMocks.connect).toHaveBeenCalledTimes(2)
+      expect(textarea.disabled).toBe(true)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000)
+      })
+      expect(gatewayMocks.connect).toHaveBeenCalledTimes(3)
+      expect(textarea.disabled).toBe(false)
+      expect(textarea.value).toBe('Send after reconnect')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the reading position during streaming and offers a jump to latest control', async () => {
+    apiMocks.getSessionMessages.mockResolvedValueOnce({
+      messages: [
+        { role: 'user', content: 'Earlier question', timestamp: 1 } as never,
+        { role: 'assistant', content: 'Earlier answer', timestamp: 2 } as never
+      ],
+      session_id: 'session-1'
+    })
+    await renderAt('/mobile/chat/session-1')
+    const thread = container.querySelector('.mobile-chat-thread') as HTMLDivElement
+    Object.defineProperties(thread, {
+      clientHeight: { configurable: true, value: 300 },
+      scrollHeight: { configurable: true, value: 1000 }
+    })
+    thread.scrollTop = 200
+    thread.dispatchEvent(new Event('scroll', { bubbles: true }))
+
+    await act(async () => {
+      gatewayMocks.eventHandler?.({ session_id: 'runtime-resumed', type: 'message.start' })
+      await Promise.resolve()
+    })
+
+    expect(thread.scrollTop).toBe(200)
+    const jump = container.querySelector('button[aria-label="Jump to latest message"]') as HTMLButtonElement | null
+    expect(jump).not.toBeNull()
+    await act(async () => {
+      jump?.click()
+    })
+    expect(thread.scrollTop).toBe(1000)
+  })
+
   it('submits a prompt only once when send is triggered twice before streaming starts', async () => {
     let releasePrompt!: () => void
     const pendingPrompt = new Promise<void>(resolve => {
@@ -285,6 +353,38 @@ describe('MobileApp', () => {
     )
   })
 
+  it('hydrates a live Desktop turn and keeps the composer disabled until it completes', async () => {
+    gatewayMocks.request.mockImplementation(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          inflight: {
+            assistant: 'Partial from Desktop',
+            streaming: true,
+            user: 'Long-running Desktop request'
+          },
+          running: true,
+          session_id: 'runtime-live'
+        }
+      }
+      return {}
+    })
+    await renderAt('/mobile/chat/session-1')
+
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    expect(container.textContent).toContain('Long-running Desktop request')
+    expect(container.textContent).toContain('Partial from Desktop')
+    expect(textarea.disabled).toBe(true)
+
+    await act(async () => {
+      gatewayMocks.eventHandler?.({
+        payload: { text: ' continued' },
+        session_id: 'runtime-live',
+        type: 'message.delta'
+      })
+    })
+    expect(container.textContent).toContain('Partial from Desktop continued')
+  })
+
   it('creates a session through the selected management profile', async () => {
     profileMocks.profile = 'mabel'
     await renderAt('/mobile/chat/new')
@@ -302,6 +402,58 @@ describe('MobileApp', () => {
     })
 
     expect(gatewayMocks.request).toHaveBeenCalledWith('session.create', expect.objectContaining({ profile: 'mabel' }))
+  })
+
+  it('refreshes conversations after creating a chat so it appears when returning to Chats', async () => {
+    const emptySessions = { limit: 20, offset: 0, total: 0, sessions: [] }
+    const refreshedSessions = {
+      limit: 20,
+      offset: 0,
+      total: 1,
+      sessions: [{
+        id: 'stored-1',
+        source: 'web',
+        model: 'gpt-5.6-sol',
+        title: 'Fresh mobile chat',
+        started_at: 1,
+        ended_at: null,
+        last_active: 2,
+        is_active: true,
+        message_count: 1,
+        tool_call_count: 0,
+        input_tokens: 1,
+        output_tokens: 0,
+        preview: 'Created from Mobile'
+      }]
+    }
+    apiMocks.getSessions
+      .mockResolvedValueOnce(emptySessions)
+      .mockResolvedValueOnce(refreshedSessions as never)
+    await renderAt('/mobile/chat/new')
+
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    const form = container.querySelector('form') as HTMLFormElement
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      valueSetter?.call(textarea, 'Create a visible session')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      expect(container.querySelector('button[aria-label="Go back"]')).not.toBeNull()
+    })
+    await act(async () => {
+      const back = container.querySelector('button[aria-label="Go back"]') as HTMLButtonElement
+      back.click()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(container.textContent).toContain('Fresh mobile chat'))
+    expect(apiMocks.getSessions.mock.calls.length).toBeGreaterThanOrEqual(2)
   })
 
   it('loads tasks only from the selected management profile', async () => {

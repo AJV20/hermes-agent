@@ -13,15 +13,28 @@ describe('mobile bottom navigation layout', () => {
     expect(shell).toContain('min-height: var(--mobile-app-height, 100dvh)')
     expect(shell).toContain('height: var(--mobile-app-height, 100dvh)')
     expect(nav).toContain('bottom: 0')
-    expect(nav).toContain('height: calc(4rem + min(var(--mobile-safe-bottom), 1rem))')
-    expect(nav).toContain('min-height: calc(4rem + min(var(--mobile-safe-bottom), 1rem))')
-    expect(nav).toContain('padding: 0.35rem 0.45rem min(var(--mobile-safe-bottom), 1rem)')
+    expect(nav).toContain('height: calc(4rem + var(--mobile-safe-bottom-capped))')
+    expect(nav).toContain('min-height: calc(4rem + var(--mobile-safe-bottom-capped))')
+    expect(nav).toContain('padding: 0.35rem 0.45rem var(--mobile-safe-bottom-capped)')
     expect(nav).toContain('align-items: center')
     expect(nav).toContain('background: color-mix')
     expect(nav).not.toContain('pointer-events: none')
     expect(styles).not.toMatch(/\.mobile-bottom-nav::before\s*\{/)
     expect(link).toContain('height: 3.3rem')
     expect(link).toContain('align-self: center')
+  })
+
+  it('uses the same capped bottom safe area for content, navigation, and the composer', () => {
+    const screen = styles.match(/\.mobile-screen\s*\{([^}]*)\}/)?.[1] ?? ''
+    const nav = styles.match(/\.mobile-bottom-nav\s*\{([^}]*)\}/)?.[1] ?? ''
+    const composer = styles.match(/\.mobile-composer\s*\{([^}]*)\}/)?.[1] ?? ''
+
+    expect(styles).toContain('--mobile-safe-bottom-capped: min(var(--mobile-safe-bottom), 1rem)')
+    expect(screen).toContain('var(--mobile-safe-bottom-capped)')
+    expect(nav).toContain('var(--mobile-safe-bottom-capped)')
+    expect(composer).toContain('var(--mobile-safe-bottom-capped)')
+    expect(screen).not.toContain('env(safe-area-inset-bottom')
+    expect(composer).not.toContain('env(safe-area-inset-bottom')
   })
 
   it('keeps compact controls at least 44 CSS pixels tall', () => {

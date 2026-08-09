@@ -21,6 +21,21 @@ export interface MobileChatState {
   tools: MobileToolActivity[]
 }
 
+export interface MobileResumeSnapshot {
+  inflight?: {
+    assistant?: string
+    corrections?: string[]
+    error?: string
+    recoverable?: boolean
+    status?: string
+    streaming?: boolean
+    user?: string
+  } | null
+  queued?: { user?: string } | null
+  running?: boolean
+  session_id: string
+}
+
 function text(payload: unknown): string {
   if (!payload || typeof payload !== 'object') return ''
   const value = (payload as { text?: unknown }).text
@@ -59,6 +74,50 @@ export function projectSessionMessages(messages: SessionMessage[]): MobileChatMe
       }
     ]
   })
+}
+
+export function hydrateMobileResume(
+  state: MobileChatState,
+  snapshot: MobileResumeSnapshot
+): MobileChatState {
+  const messages = [...state.messages]
+  const append = (
+    role: MobileChatMessage['role'],
+    content: string | undefined,
+    id: string,
+    streaming = false
+  ) => {
+    const value = typeof content === 'string' ? content : ''
+    if (!value.trim() && !streaming) return
+    const last = messages.at(-1)
+    if (last?.role === role && last.content === value) {
+      if (streaming && !last.streaming) messages[messages.length - 1] = { ...last, streaming: true }
+      return
+    }
+    messages.push({ content: value, id, role, streaming })
+  }
+
+  const inflight = snapshot.inflight
+  if (inflight) {
+    append('user', inflight.user, 'resume-inflight-user')
+    for (const [index, correction] of (inflight.corrections ?? []).entries()) {
+      append('user', correction, `resume-correction-${index}`)
+    }
+    append(
+      'assistant',
+      inflight.assistant,
+      'resume-inflight-assistant',
+      Boolean(snapshot.running && inflight.streaming && !inflight.error)
+    )
+  }
+  append('user', snapshot.queued?.user, 'resume-queued-user')
+
+  return {
+    ...state,
+    busy: Boolean(snapshot.running),
+    error: inflight?.error || state.error,
+    messages
+  }
 }
 
 export function applyMobileGatewayEvent(

@@ -1,4 +1,5 @@
 import {
+  ArrowDown,
   ArrowLeft,
   Bot,
   CheckCircle2,
@@ -25,9 +26,11 @@ import { api, type CronJob, type SessionInfo, type StatusResponse } from '@/lib/
 import { GatewayClient, type GatewayEvent } from '@/lib/gatewayClient'
 import {
   applyMobileGatewayEvent,
+  hydrateMobileResume,
   projectSessionMessages,
   type MobileChatMessage,
-  type MobileChatState
+  type MobileChatState,
+  type MobileResumeSnapshot
 } from './mobile-chat-state'
 import { syncMobileViewportHeight } from './mobile-viewport'
 import './mobile-app.css'
@@ -39,6 +42,7 @@ const EMPTY_CHAT: MobileChatState = {
   tools: []
 }
 const PROMPT_TIMEOUT_MS = 1_800_000
+const RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000] as const
 
 type LoadPhase = 'error' | 'loading' | 'ready'
 
@@ -457,7 +461,15 @@ function ChatBubble({ message }: { message: MobileChatMessage }) {
   )
 }
 
-function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessionId: string }) {
+function ChatScreen({
+  onSessionCreated,
+  profile,
+  storedSessionId
+}: {
+  onSessionCreated: () => void
+  profile: string
+  storedSessionId: string
+}) {
   const navigate = useNavigate()
   const gateway = useMemo(() => new GatewayClient(), [])
   const isNew = storedSessionId === 'new'
@@ -468,10 +480,53 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
   const [draft, setDraft] = useState('')
   const [connected, setConnected] = useState(false)
   const [ready, setReady] = useState(false)
+  const [showJumpLatest, setShowJumpLatest] = useState(false)
+  const shouldAutoFollowRef = useRef(true)
   const threadRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     let cancelled = false
+    let reconnectAttempt = 0
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+
+    const resumeAfterReconnect = async () => {
+      const resumableId = pendingStoredId.current || (!isNew ? storedSessionId : null)
+      if (resumableId) {
+        const resumed = await gateway.request<MobileResumeSnapshot>('session.resume', {
+          cols: 48,
+          ...(profile ? { profile } : {}),
+          session_id: resumableId,
+          source: 'web'
+        })
+        runtimeId.current = resumed.session_id
+        setChat(current => hydrateMobileResume({ ...current, error: null }, resumed))
+      }
+      if (!cancelled) {
+        setConnected(true)
+        setReady(true)
+        setChat(current => ({ ...current, error: null }))
+      }
+    }
+
+    const scheduleReconnect = () => {
+      if (cancelled || reconnectTimer) return
+      const delay = RECONNECT_DELAYS_MS[reconnectAttempt]
+      if (delay === undefined) {
+        setChat(current => ({ ...current, error: 'Could not reconnect to Hermes. Reopen this chat to retry.' }))
+        return
+      }
+      reconnectAttempt += 1
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null
+        void gateway.connect()
+          .then(async () => {
+            await resumeAfterReconnect()
+            reconnectAttempt = 0
+          })
+          .catch(() => scheduleReconnect())
+      }, delay)
+    }
+
     const disposers = [
       gateway.onAny((event: GatewayEvent) => {
         if (event.session_id && event.session_id !== runtimeId.current) return
@@ -482,6 +537,7 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
         const isOpen = state === 'open'
         setConnected(isOpen)
         if (!isOpen) setReady(false)
+        if (state === 'closed' || state === 'error') scheduleReconnect()
       })
     ]
 
@@ -498,7 +554,7 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
             stored => ({ ok: true as const, stored }),
             () => ({ ok: false as const })
           ),
-          gateway.request<{ session_id: string }>('session.resume', {
+          gateway.request<MobileResumeSnapshot>('session.resume', {
             cols: 48,
             ...(profile ? { profile } : {}),
             session_id: storedSessionId,
@@ -508,21 +564,23 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
         if (cancelled) return
         runtimeId.current = resumed.session_id
         setReady(true)
-        setChat(current => ({
+        setChat(current => hydrateMobileResume({
           ...current,
           error: storedResult.ok ? current.error : 'Could not load conversation history.',
           messages: storedResult.ok ? projectSessionMessages(storedResult.stored.messages) : current.messages
-        }))
+        }, resumed))
       })
       .catch((error: Error) => {
         if (!cancelled) {
           setReady(false)
           setChat(current => ({ ...current, error: error.message }))
+          scheduleReconnect()
         }
       })
 
     return () => {
       cancelled = true
+      if (reconnectTimer) clearTimeout(reconnectTimer)
       disposers.forEach(dispose => dispose())
       gateway.close()
     }
@@ -530,8 +588,30 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
 
   useEffect(() => {
     const node = threadRef.current
-    if (node) node.scrollTop = node.scrollHeight
+    if (!node) return
+    if (shouldAutoFollowRef.current) {
+      node.scrollTop = node.scrollHeight
+      setShowJumpLatest(false)
+    } else {
+      setShowJumpLatest(true)
+    }
   }, [chat.messages, chat.tools])
+
+  const trackThreadScroll = useCallback(() => {
+    const node = threadRef.current
+    if (!node) return
+    const nearBottom = node.scrollHeight - node.scrollTop - node.clientHeight <= 80
+    shouldAutoFollowRef.current = nearBottom
+    if (nearBottom) setShowJumpLatest(false)
+  }, [])
+
+  const jumpToLatest = useCallback(() => {
+    const node = threadRef.current
+    if (!node) return
+    shouldAutoFollowRef.current = true
+    node.scrollTop = node.scrollHeight
+    setShowJumpLatest(false)
+  }, [])
 
   const submit = useCallback(
     async (event: FormEvent) => {
@@ -575,6 +655,7 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
         if (pendingStoredId.current) {
           const durable = pendingStoredId.current
           pendingStoredId.current = null
+          onSessionCreated()
           navigate(`/mobile/chat/${encodeURIComponent(durable)}`, { replace: true })
         }
       } catch (error) {
@@ -588,7 +669,7 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
         }))
       }
     },
-    [chat.busy, draft, gateway, navigate, profile, ready]
+    [chat.busy, draft, gateway, navigate, onSessionCreated, profile, ready]
   )
 
   return (
@@ -598,7 +679,7 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
         detail={connected ? 'Connected to Desktop' : 'Connecting…'}
         title={isNew ? 'New chat' : 'Hermes'}
       />
-      <div className="mobile-chat-thread" ref={threadRef}>
+      <div className="mobile-chat-thread" onScroll={trackThreadScroll} ref={threadRef}>
         {!chat.messages.length && (
           <div className="mobile-chat-empty">
             <span className="mobile-wordmark is-large">H</span>
@@ -624,15 +705,26 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
           </div>
         )}
       </div>
+      {showJumpLatest && (
+        <button
+          aria-label="Jump to latest message"
+          className="mobile-jump-latest"
+          onClick={jumpToLatest}
+          type="button"
+        >
+          <ArrowDown />
+          Latest
+        </button>
+      )}
       <form className="mobile-composer" onSubmit={submit}>
         <IconButton label="Open files" onClick={() => navigate('/files')}>
           <Plus />
         </IconButton>
         <textarea
           aria-label="Message Hermes"
-          disabled={!ready}
+          disabled={!ready || chat.busy}
           onChange={event => setDraft(event.target.value)}
-          placeholder={ready ? 'Message Hermes…' : isNew ? 'Connecting to Hermes…' : 'Resuming conversation…'}
+          placeholder={chat.busy ? 'Hermes is responding…' : ready ? 'Message Hermes…' : isNew ? 'Connecting to Hermes…' : 'Resuming conversation…'}
           rows={1}
           value={draft}
         />
@@ -659,6 +751,7 @@ export function MobileApp() {
   const [statusLoad, setStatusLoad] = useState<ScopedLoadState>({ phase: 'loading', scope: null })
   const [sessionsLoad, setSessionsLoad] = useState<ScopedLoadState>({ phase: 'loading', scope: null })
   const [tasksLoad, setTasksLoad] = useState<ScopedLoadState>({ phase: 'loading', scope: null })
+  const [sessionsRefreshKey, setSessionsRefreshKey] = useState(0)
   const selectedProfile = profile || currentProfile
 
   useEffect(() => {
@@ -705,7 +798,7 @@ export function MobileApp() {
     return () => {
       cancelled = true
     }
-  }, [profile, selectedProfile])
+  }, [profile, selectedProfile, sessionsRefreshKey])
 
   const statusPhase: LoadPhase = statusLoad.scope === selectedProfile ? statusLoad.phase : 'loading'
   const sessionsPhase: LoadPhase = sessionsLoad.scope === selectedProfile ? sessionsLoad.phase : 'loading'
@@ -721,7 +814,14 @@ export function MobileApp() {
   if (chatMatch?.[1]) {
     const storedSessionId = safeDecodePathSegment(chatMatch[1])
     if (!storedSessionId) return <Navigate replace to="/mobile/chats" />
-    return <ChatScreen key={`${profile}\u0000${storedSessionId}`} profile={profile} storedSessionId={storedSessionId} />
+    return (
+      <ChatScreen
+        key={`${profile}\u0000${storedSessionId}`}
+        onSessionCreated={() => setSessionsRefreshKey(current => current + 1)}
+        profile={profile}
+        storedSessionId={storedSessionId}
+      />
+    )
   }
 
   const active = routeTab(pathname)

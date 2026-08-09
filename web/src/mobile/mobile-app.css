@@ -9,6 +9,7 @@
   --mobile-accent: var(--color-primary, #ffca8d);
   --mobile-accent-text: var(--color-primary-foreground, #071a1a);
   --mobile-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --mobile-safe-bottom-capped: min(var(--mobile-safe-bottom), 1rem);
   min-height: 100dvh;
   height: 100dvh;
   background: var(--mobile-bg);
@@ -93,7 +94,7 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 1rem 0.9rem calc(5.4rem + env(safe-area-inset-bottom, 0px));
+  padding: 1rem 0.9rem calc(5.4rem + var(--mobile-safe-bottom-capped));
   scrollbar-width: none;
 }
 .mobile-screen::-webkit-scrollbar,
@@ -398,9 +399,9 @@
   bottom: 0;
   z-index: 20;
   box-sizing: border-box;
-  height: calc(4rem + min(var(--mobile-safe-bottom), 1rem));
-  min-height: calc(4rem + min(var(--mobile-safe-bottom), 1rem));
-  padding: 0.35rem 0.45rem min(var(--mobile-safe-bottom), 1rem);
+  height: calc(4rem + var(--mobile-safe-bottom-capped));
+  min-height: calc(4rem + var(--mobile-safe-bottom-capped));
+  padding: 0.35rem 0.45rem var(--mobile-safe-bottom-capped);
   border-top: 1px solid var(--mobile-line);
   background: color-mix(in srgb, var(--mobile-bg) 94%, transparent);
   backdrop-filter: blur(18px);
@@ -434,6 +435,7 @@
   height: 1.2rem;
 }
 .mobile-chat-shell {
+  position: relative;
   display: flex;
   flex-direction: column;
 }
@@ -522,10 +524,35 @@
   color: #ffb4b4;
   font-size: 0.72rem;
 }
+.mobile-jump-latest {
+  position: absolute;
+  right: 1rem;
+  bottom: calc(5.35rem + var(--mobile-safe-bottom-capped));
+  z-index: 5;
+  min-width: 6.5rem;
+  min-height: 3rem;
+  padding: 0.55rem 0.85rem;
+  border: 1px solid var(--mobile-line);
+  border-radius: 999px;
+  background: var(--mobile-panel-strong);
+  color: var(--mobile-text);
+  box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.24);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 750;
+}
+.mobile-jump-latest svg {
+  width: 1rem;
+  height: 1rem;
+}
 .mobile-composer {
   flex: 0 0 auto;
-  min-height: calc(4.6rem + env(safe-area-inset-bottom, 0px));
-  padding: 0.5rem 0.55rem calc(0.55rem + env(safe-area-inset-bottom, 0px));
+  min-height: calc(4.6rem + var(--mobile-safe-bottom-capped));
+  padding: 0.5rem 0.55rem calc(0.55rem + var(--mobile-safe-bottom-capped));
   border-top: 1px solid var(--mobile-line);
   background: var(--mobile-bg);
   display: grid;
