@@ -79,3 +79,11 @@ def test_dashboard_serves_manifest_and_service_worker_with_pwa_headers(monkeypat
     assert service_worker.headers["content-type"].startswith("application/javascript")
     assert service_worker.headers["service-worker-allowed"] == "/hermes/"
     assert service_worker.headers["cache-control"] == "no-cache"
+    assert "__HERMES_DEPLOY_REVISION__" not in service_worker.text
+
+    # Existing installed clients re-check the old worker URL. The server must
+    # still serve changed worker bytes when the deployed asset set changes.
+    (tmp_path / "assets" / "index.js").write_text("console.log('next release')", encoding="utf-8")
+    changed_worker = client.get("/sw.js?v=index.js", headers={"X-Forwarded-Prefix": "/hermes"})
+    assert changed_worker.status_code == 200
+    assert changed_worker.text != service_worker.text

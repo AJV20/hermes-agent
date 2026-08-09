@@ -22,13 +22,12 @@ describe('PWA mobile shell', () => {
     )
   })
 
-  it('announces a new service worker without forcing an in-place reload', () => {
+  it('waits for an explicit client handshake before activating a new worker', () => {
     const worker = readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8')
 
-    expect(worker).toContain('const HERMES_DEPLOY_REVISION = "__HERMES_DEPLOY_REVISION__"')
-    expect(worker).toContain('searchParams.get("v")')
-    expect(worker).toContain('HERMES_DEPLOY_REVISION}-${HERMES_PWA_URL_REVISION')
-    expect(worker).toContain('client.postMessage({ type: "HERMES_PWA_UPDATE_READY" });')
+    expect(worker).toContain('event.data?.type === "SKIP_WAITING"')
+    expect(worker).toContain('self.skipWaiting()')
+    expect(worker).not.toContain('self.skipWaiting();\n  event.waitUntil')
     expect(worker).not.toContain('client.navigate(client.url)')
   })
 

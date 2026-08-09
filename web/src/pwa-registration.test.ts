@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { registerHermesPwa } from './pwa'
+import { registerHermesPwa, requestHermesPwaUpdate } from './pwa'
 
 describe('registerHermesPwa', () => {
   afterEach(() => {
@@ -27,5 +27,30 @@ describe('registerHermesPwa', () => {
     registerHermesPwa()
 
     expect(register).toHaveBeenCalledWith('/sw.js?v=index-mobile.js', { scope: '/' })
+  })
+
+  it('asks a waiting worker to activate and reloads only after one controller change', async () => {
+    const postMessage = vi.fn()
+    const controllerChange = new Set<() => void>()
+    const getRegistration = vi.fn(async () => ({ waiting: { postMessage } }))
+    Object.defineProperty(navigator, 'serviceWorker', {
+      configurable: true,
+      value: {
+        addEventListener: (type: string, handler: () => void) => {
+          if (type === 'controllerchange') controllerChange.add(handler)
+        },
+        getRegistration,
+        removeEventListener: (type: string, handler: () => void) => controllerChange.delete(handler)
+      }
+    })
+    const reload = vi.fn()
+    Object.defineProperty(window, 'location', { configurable: true, value: { reload } })
+
+    expect(await requestHermesPwaUpdate()).toBe(true)
+    expect(postMessage).toHaveBeenCalledWith({ type: 'SKIP_WAITING' })
+    expect(reload).not.toHaveBeenCalled()
+    controllerChange.forEach(handler => handler())
+    controllerChange.forEach(handler => handler())
+    expect(reload).toHaveBeenCalledTimes(1)
   })
 })

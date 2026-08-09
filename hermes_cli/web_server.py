@@ -16395,8 +16395,23 @@ def mount_spa(application: FastAPI):
             return JSONResponse({"error": "not found"}, status_code=404)
         prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
         allowed_scope = f"{prefix}/" if prefix else "/"
-        return FileResponse(
-            sw_path,
+        # Existing Home Screen installations keep checking their original
+        # ``sw.js?v=<old-entry>`` URL. Make the worker bytes deployment-specific
+        # independently of that stale query string so WebKit sees every release.
+        digest = hashlib.sha256()
+        for asset_path in sorted(path for path in WEB_DIST.rglob("*") if path.is_file() and path != sw_path):
+            digest.update(asset_path.relative_to(WEB_DIST).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(asset_path.read_bytes())
+            digest.update(b"\0")
+        deploy_revision = digest.hexdigest()[:20]
+        worker = sw_path.read_text(encoding="utf-8")
+        if "__HERMES_DEPLOY_REVISION__" in worker:
+            worker = worker.replace("__HERMES_DEPLOY_REVISION__", deploy_revision)
+        else:
+            worker = f"{worker.rstrip()}\n// Hermes deploy revision: {deploy_revision}\n"
+        return Response(
+            content=worker,
             media_type="application/javascript",
             headers={
                 "Cache-Control": "no-cache",
@@ -17558,6 +17573,182 @@ def _mount_plugin_api_routes():
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
+
+
+# ---------------------------------------------------------------------------
+# Mobile notification center
+# ---------------------------------------------------------------------------
+# This store is intentionally profile-local and separate from transcripts.
+# Notification bodies are never placed in Cache Storage by the service worker.
+_MOBILE_NOTIFICATION_TEXT_MAX = 1000
+_MOBILE_NOTIFICATION_TITLE_MAX = 160
+_MOBILE_NOTIFICATION_SAFE_KEY = re.compile(r"^[a-zA-Z0-9._:-]{1,128}$")
+_MOBILE_NOTIFICATION_SECRET_MARKERS = re.compile(
+    r"(?:authorization|set-cookie|session[ _-]?token|api[ _-]?key|bearer\s+[A-Za-z0-9._-]{8,})",
+    re.IGNORECASE,
+)
+
+
+class _MobileNotificationBody(BaseModel):
+    body: str
+    dedupe_key: Optional[str] = None
+    level: Literal["error", "info", "success", "warning"] = "info"
+    session_id: Optional[str] = None
+    target: Optional[str] = None
+    title: str
+    type: str
+
+    @field_validator("title")
+    @classmethod
+    def _safe_title(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > _MOBILE_NOTIFICATION_TITLE_MAX or "<" in value or ">" in value or "\x00" in value:
+            raise ValueError("Notification text is invalid")
+        if _MOBILE_NOTIFICATION_SECRET_MARKERS.search(value):
+            raise ValueError("Notification text may not contain authentication material")
+        return value
+
+    @field_validator("body")
+    @classmethod
+    def _safe_body(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > _MOBILE_NOTIFICATION_TEXT_MAX or "<" in value or ">" in value or "\x00" in value:
+            raise ValueError("Notification text is invalid")
+        if _MOBILE_NOTIFICATION_SECRET_MARKERS.search(value):
+            raise ValueError("Notification text may not contain authentication material")
+        return value
+
+    @field_validator("type", "dedupe_key")
+    @classmethod
+    def _safe_key(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        value = value.strip()
+        if not _MOBILE_NOTIFICATION_SAFE_KEY.fullmatch(value):
+            raise ValueError("Notification key is invalid")
+        return value
+
+    @field_validator("session_id")
+    @classmethod
+    def _safe_session_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value or len(value) > 256 or any(char in value for char in "\r\n\x00"):
+            raise ValueError("Session id is invalid")
+        return value
+
+    @field_validator("target")
+    @classmethod
+    def _safe_target(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value.startswith("/mobile") or value.startswith("//") or "\\" in value or len(value) > 512:
+            raise ValueError("Notification target must be a Hermes Mobile path")
+        return value
+
+
+def _mobile_notification_home(profile: Optional[str]) -> tuple[str, Path]:
+    requested = (profile or "").strip()
+    if not requested or requested.lower() == "current":
+        return "default", get_hermes_home()
+    return requested, _resolve_profile_dir(requested)
+
+
+def _mobile_notification_headers(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store"
+
+
+def _mobile_notification_session_exists(profile: Optional[str], session_id: Optional[str]) -> bool:
+    if not session_id:
+        return True
+    db = _open_session_db_for_profile(profile, read_only=True)
+    try:
+        return db.get_session(session_id) is not None
+    finally:
+        db.close()
+
+
+@app.get("/api/mobile/notifications")
+async def get_mobile_notifications(
+    request: Request,
+    response: Response,
+    profile: Optional[str] = None,
+    include_dismissed: bool = False,
+    limit: int = 50,
+):
+    _require_token(request)
+    _mobile_notification_headers(response)
+    if not 1 <= limit <= 100:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
+    from hermes_cli.mobile_notifications import list_notifications
+
+    _profile, home = _mobile_notification_home(profile)
+    items, total = await asyncio.to_thread(
+        list_notifications, home, include_dismissed=include_dismissed, limit=limit
+    )
+    return {"items": items, "total": total}
+
+
+@app.post("/api/mobile/notifications")
+async def post_mobile_notification(
+    request: Request,
+    response: Response,
+    body: _MobileNotificationBody,
+    profile: Optional[str] = None,
+):
+    _require_token(request)
+    _mobile_notification_headers(response)
+    if not _mobile_notification_session_exists(profile, body.session_id):
+        # A session id from a different profile must look exactly like a missing
+        # session. Never let notification writes become a profile oracle.
+        raise HTTPException(status_code=404, detail="Session not found")
+    from hermes_cli.mobile_notifications import upsert_notification
+
+    profile_name, home = _mobile_notification_home(profile)
+    return await asyncio.to_thread(
+        upsert_notification,
+        home,
+        body=body.body,
+        dedupe_key=body.dedupe_key,
+        level=body.level,
+        profile=profile_name,
+        session_id=body.session_id,
+        target=body.target,
+        title=body.title,
+        type=body.type,
+    )
+
+
+async def _set_mobile_notification_state(
+    request: Request, response: Response, notification_id: str, profile: Optional[str], field: str
+):
+    _require_token(request)
+    _mobile_notification_headers(response)
+    if not _MOBILE_NOTIFICATION_SAFE_KEY.fullmatch(notification_id):
+        raise HTTPException(status_code=404, detail="Notification not found")
+    from hermes_cli.mobile_notifications import set_notification_state
+
+    _profile, home = _mobile_notification_home(profile)
+    item = await asyncio.to_thread(set_notification_state, home, notification_id, field=field)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return item
+
+
+@app.post("/api/mobile/notifications/{notification_id}/read")
+async def post_mobile_notification_read(
+    notification_id: str, request: Request, response: Response, profile: Optional[str] = None
+):
+    return await _set_mobile_notification_state(request, response, notification_id, profile, "read_at")
+
+
+@app.post("/api/mobile/notifications/{notification_id}/dismiss")
+async def post_mobile_notification_dismiss(
+    notification_id: str, request: Request, response: Response, profile: Optional[str] = None
+):
+    return await _set_mobile_notification_state(request, response, notification_id, profile, "dismissed_at")
 
 
 # Mount plugin API routes before the SPA catch-all.

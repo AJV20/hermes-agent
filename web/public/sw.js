@@ -18,8 +18,16 @@ function stripScope(pathname) {
   return pathname;
 }
 
+self.addEventListener("message", (event) => {
+  // A replacement worker remains waiting until the user explicitly accepts an
+  // update. This protects drafts, uploads, and active streams from surprise
+  // activation/reload cycles.
+  if (event.data?.type === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
+});
+
 self.addEventListener("install", (event) => {
-  self.skipWaiting();
   event.waitUntil(
     caches.open(HERMES_PWA_CACHE).then(async (cache) => {
       await cache.add(HERMES_OFFLINE_URL);
