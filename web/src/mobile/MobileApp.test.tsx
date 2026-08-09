@@ -49,7 +49,8 @@ const apiMocks = vi.hoisted(() => ({
     version: '1.0.0'
   })),
   renameSession: vi.fn(async (_id: string, title: string) => ({ ok: true, title })),
-  searchSessions: vi.fn(async (): Promise<{ results: unknown[] }> => ({ results: [] }))
+  searchSessions: vi.fn(async (): Promise<{ results: unknown[] }> => ({ results: [] })),
+  updateSession: vi.fn(async () => ({ ok: true }))
 }))
 
 const gatewayMocks = vi.hoisted(() => ({
@@ -152,6 +153,7 @@ beforeEach(() => {
   })
   apiMocks.renameSession.mockReset().mockImplementation(async (_id: string, title: string) => ({ ok: true, title }))
   apiMocks.searchSessions.mockReset().mockResolvedValue({ results: [] })
+  apiMocks.updateSession.mockReset().mockResolvedValue({ ok: true })
   gatewayMocks.request.mockReset().mockImplementation(async (method: string) => {
     if (method === 'session.create') {
       return { session_id: 'runtime-1', stored_session_id: 'stored-1' }
@@ -414,6 +416,109 @@ describe('MobileApp', () => {
 
     expect(apiMocks.renameSession).toHaveBeenCalledWith('session-1', 'Native mobile roadmap', '')
     expect(container.textContent).toContain('Native mobile roadmap')
+  })
+
+  it('pins, unpins, archives, and restores conversations in the selected profile', async () => {
+    await renderAt('/mobile/chats')
+
+    const openActions = async () => {
+      await act(async () => {
+        ;(container.querySelector('button[aria-label="Actions for Hermes mobile PWA"]') as HTMLButtonElement).click()
+      })
+    }
+
+    await openActions()
+    const pin = container.querySelector('button[aria-label="Pin conversation"]') as HTMLButtonElement
+    expect(pin).not.toBeNull()
+    await act(async () => {
+      pin.click()
+      await Promise.resolve()
+    })
+    expect(apiMocks.updateSession).toHaveBeenCalledWith('session-1', { pinned: true }, '')
+
+    await openActions()
+    const unpin = container.querySelector('button[aria-label="Unpin conversation"]') as HTMLButtonElement
+    expect(unpin).not.toBeNull()
+    await act(async () => {
+      unpin.click()
+      await Promise.resolve()
+    })
+    expect(apiMocks.updateSession).toHaveBeenCalledWith('session-1', { pinned: false }, '')
+
+    await openActions()
+    const archive = container.querySelector('button[aria-label="Archive conversation"]') as HTMLButtonElement
+    expect(archive).not.toBeNull()
+    await act(async () => {
+      archive.click()
+      await Promise.resolve()
+    })
+    expect(apiMocks.updateSession).toHaveBeenCalledWith('session-1', { archived: true }, '')
+
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="View archived conversations"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    await openActions()
+    const restore = container.querySelector('button[aria-label="Restore conversation"]') as HTMLButtonElement
+    expect(restore).not.toBeNull()
+    await act(async () => {
+      restore.click()
+      await Promise.resolve()
+    })
+    expect(apiMocks.updateSession).toHaveBeenCalledWith('session-1', { archived: false }, '')
+  })
+
+  it('loads archived conversations separately and disables incomplete search', async () => {
+    apiMocks.getSessions
+      .mockResolvedValueOnce({
+        limit: 30,
+        offset: 0,
+        total: 1,
+        sessions: [{
+          id: 'session-1', source: 'desktop', model: 'gpt-5.6-sol', title: 'Active conversation',
+          started_at: 1, ended_at: null, last_active: 2, is_active: true, message_count: 4,
+          tool_call_count: 1, input_tokens: 10, output_tokens: 20, preview: 'Active', archived: false, pinned: false
+        }]
+      } as never)
+      .mockResolvedValueOnce({
+        limit: 30,
+        offset: 0,
+        total: 1,
+        sessions: [{
+          id: 'archived-1', source: 'desktop', model: 'gpt-5.6-sol', title: 'Archived conversation',
+          started_at: 1, ended_at: null, last_active: 2, is_active: false, message_count: 4,
+          tool_call_count: 1, input_tokens: 10, output_tokens: 20, preview: 'Archived', archived: true, pinned: false
+        }]
+      } as never)
+    await renderAt('/mobile/chats')
+
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="View archived conversations"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      expect(apiMocks.getSessions).toHaveBeenLastCalledWith(30, 0, { archived: true, order: 'recent', profile: '' })
+    })
+    expect(container.textContent).toContain('Archived conversation')
+    expect((container.querySelector('input[aria-label="Search conversations"]') as HTMLInputElement).disabled).toBe(true)
+    expect(container.textContent).toContain('Search is available in active conversations.')
+  })
+
+  it('keeps a conversation visible and shows an error when a session flag update fails', async () => {
+    apiMocks.updateSession.mockRejectedValueOnce(new Error('offline'))
+    await renderAt('/mobile/chats')
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Actions for Hermes mobile PWA"]') as HTMLButtonElement).click()
+    })
+
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Archive conversation"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+
+    expect(container.textContent).toContain('offline')
+    expect(container.textContent).toContain('Hermes mobile PWA')
   })
 
   it('requires confirmation before deleting a conversation', async () => {

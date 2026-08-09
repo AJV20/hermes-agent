@@ -82,4 +82,15 @@ describe('mobile bottom navigation layout', () => {
     expect(styles).toContain('.mobile-sheet-handle')
     expect(searchInput).toContain('font-size: 1rem')
   })
+
+  it('keeps session visibility and action-sheet controls touch sized', () => {
+    const filter = styles.match(/\.mobile-session-filter\s*\{([^}]*)\}/)?.[1] ?? ''
+    const filterButton = styles.match(/\.mobile-session-filter button\s*\{([^}]*)\}/)?.[1] ?? ''
+    const sheetAction = styles.match(/\.mobile-sheet-action\s*\{([^}]*)\}/)?.[1] ?? ''
+
+    expect(filter).toContain('display: grid')
+    expect(filterButton).toContain('min-height: 2.75rem')
+    expect(sheetAction).toContain('min-height: 2.75rem')
+    expect(sheetAction).toContain('width: 100%')
+  })
 })

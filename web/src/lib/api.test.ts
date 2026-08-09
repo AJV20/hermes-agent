@@ -107,6 +107,32 @@ describe("api.getSessionMessages", () => {
   });
 });
 
+describe("api session management", () => {
+  it("serializes archived session filtering and profile-scoped flag updates", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getSessions(30, 0, { archived: true, order: "recent", profile: "mabel" });
+    await api.updateSession("session-1", { pinned: true }, "mabel");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/sessions?limit=30&offset=0&order=recent&archived=true&profile=mabel",
+      expect.objectContaining({ credentials: "include" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/sessions/session-1",
+      expect.objectContaining({
+        body: JSON.stringify({ pinned: true, profile: "mabel" }),
+        credentials: "include",
+        method: "PATCH",
+      }),
+    );
+  });
+});
+
 describe("api.getModelOptions", () => {
   it("requests a live model refresh when asked", async () => {
     vi.stubGlobal("window", {});

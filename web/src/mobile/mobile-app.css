@@ -715,6 +715,35 @@
   gap: 0.45rem;
   align-items: center;
 }
+.mobile-session-filter {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+  margin: 0 0 0.65rem;
+  padding: 0.25rem;
+  border: 1px solid var(--mobile-line);
+  border-radius: 0.9rem;
+  background: color-mix(in srgb, var(--mobile-panel) 88%, transparent);
+}
+.mobile-session-filter button {
+  min-height: 2.75rem;
+  border: 0;
+  border-radius: 0.7rem;
+  background: transparent;
+  color: var(--mobile-muted);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+.mobile-session-filter button.is-active {
+  background: var(--mobile-panel-strong);
+  color: var(--mobile-accent);
+}
+.mobile-search-note {
+  margin: -0.35rem 0 0.8rem;
+  color: var(--mobile-muted);
+  font-size: 0.72rem;
+}
 .mobile-search > svg {
   width: 1rem;
   color: var(--mobile-muted);
@@ -956,6 +985,25 @@
 .mobile-primary-button {
   background: var(--mobile-accent);
   color: var(--mobile-accent-text);
+}
+.mobile-sheet-action {
+  width: 100%;
+  min-height: 2.75rem;
+  margin-top: 0.6rem;
+  border: 1px solid var(--mobile-line);
+  border-radius: 0.8rem;
+  background: var(--mobile-panel-strong);
+  color: var(--mobile-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+.mobile-sheet-action svg {
+  width: 1rem;
 }
 .mobile-danger-button {
   width: 100%;

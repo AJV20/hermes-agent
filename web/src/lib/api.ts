@@ -301,6 +301,7 @@ function appendQueryParam(url: string, key: string, value?: string): string {
 }
 
 export interface SessionQueryOptions {
+  archived?: boolean;
   profile?: string;
   order?: "created" | "recent";
   source?: string | null;
@@ -330,6 +331,11 @@ function normalizeSessionQueryOptions(
 
 function appendSessionFilters(url: string, options: SessionQueryOptions): string {
   let next = url;
+  next = appendQueryParam(
+    next,
+    "archived",
+    typeof options.archived === "boolean" ? String(options.archived) : undefined,
+  );
   next = appendQueryParam(next, "source", options.source ?? undefined);
   if (options.sources && options.sources.length > 0) {
     next = appendQueryParam(next, "sources", options.sources.join(","));
@@ -439,15 +445,18 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids, profile: profile || undefined }),
     }),
+  updateSession: (
+    id: string,
+    updates: SessionUpdate,
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<SessionUpdateResponse>(`/api/sessions/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...updates, profile: profile || undefined }),
+    }),
   renameSession: (id: string, title: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; title: string }>(
-      `/api/sessions/${encodeURIComponent(id)}`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, profile: profile || undefined }),
-      },
-    ),
+    api.updateSession(id, { title }, profile),
   getSessionStats: (profile = getManagementProfile()) =>
     fetchJSON<SessionStoreStats>(appendProfileParam("/api/sessions/stats", profile)),
   exportSessionUrl: (id: string, profile = getManagementProfile()) =>
@@ -1901,7 +1910,9 @@ export interface StatusResponse {
 }
 
 export interface SessionInfo {
+  archived: boolean;
   id: string;
+  is_default_profile: boolean;
   source: string | null;
   model: string | null;
   title: string | null;
@@ -1914,7 +1925,20 @@ export interface SessionInfo {
   input_tokens: number;
   output_tokens: number;
   preview: string | null;
+  profile: string;
+  pinned: boolean;
   parent_session_id?: string | null;
+}
+
+export interface SessionUpdate {
+  archived?: boolean;
+  pinned?: boolean;
+  title?: string;
+}
+
+export interface SessionUpdateResponse {
+  object: "hermes.session";
+  session: SessionInfo;
 }
 
 export interface SessionLatestDescendantResponse {
