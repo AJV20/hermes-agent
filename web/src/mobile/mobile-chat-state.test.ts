@@ -74,6 +74,18 @@ describe('applyMobileGatewayEvent', () => {
 
 describe('hydrateMobileResume', () => {
   it('restores an in-flight answer, corrections, and the queued prompt as a busy turn', () => {
+    const snapshot = {
+      inflight: {
+        assistant: 'Partial answer',
+        corrections: ['Focus on mobile'],
+        streaming: true,
+        user: 'Explain the release'
+      },
+      queued: { user: 'Then summarize it' },
+      running: false,
+      status: 'working',
+      session_id: 'runtime-resumed'
+    }
     const hydrated = hydrateMobileResume(
       {
         busy: false,
@@ -81,18 +93,7 @@ describe('hydrateMobileResume', () => {
         messages: [{ id: 'stored-1', role: 'assistant', content: 'Earlier answer' }],
         tools: []
       },
-      {
-        inflight: {
-          assistant: 'Partial answer',
-          corrections: ['Focus on mobile'],
-          streaming: true,
-          user: 'Explain the release'
-        },
-        queued: { user: 'Then summarize it' },
-        running: false,
-        status: 'working',
-        session_id: 'runtime-resumed'
-      }
+      snapshot
     )
 
     expect(hydrated.busy).toBe(true)
@@ -104,7 +105,10 @@ describe('hydrateMobileResume', () => {
       { role: 'user', content: 'Then summarize it', queued: true }
     ])
 
-    const restarted = applyMobileGatewayEvent(hydrated, {
+    const rehydrated = hydrateMobileResume(hydrated, snapshot)
+    expect(rehydrated.messages).toHaveLength(5)
+
+    const restarted = applyMobileGatewayEvent(rehydrated, {
       type: 'message.start',
       payload: {}
     })

@@ -82,7 +82,10 @@ export function hydrateMobileResume(
   state: MobileChatState,
   snapshot: MobileResumeSnapshot
 ): MobileChatState {
-  const messages = [...state.messages]
+  const hasLiveSnapshot = Boolean(snapshot.inflight || snapshot.queued)
+  const messages = hasLiveSnapshot
+    ? state.messages.filter(message => !message.id.startsWith('resume-'))
+    : [...state.messages]
   const append = (
     role: MobileChatMessage['role'],
     content: string | undefined,
