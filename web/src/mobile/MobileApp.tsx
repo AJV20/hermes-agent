@@ -29,6 +29,7 @@ import {
   type MobileChatMessage,
   type MobileChatState
 } from './mobile-chat-state'
+import { syncMobileViewportHeight } from './mobile-viewport'
 import './mobile-app.css'
 
 const EMPTY_CHAT: MobileChatState = {
@@ -68,6 +69,42 @@ function safeDecodePathSegment(value: string): string | null {
   } catch {
     return null
   }
+}
+
+function useMobileViewportSync() {
+  useEffect(() => {
+    const timers: number[] = []
+    const frames: number[] = []
+    const sync = () => {
+      syncMobileViewportHeight()
+      void document.documentElement.offsetHeight
+    }
+    const settle = () => {
+      sync()
+      frames.push(window.requestAnimationFrame(sync))
+      timers.push(window.setTimeout(sync, 100), window.setTimeout(sync, 300))
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') settle()
+    }
+
+    settle()
+    window.addEventListener('resize', sync)
+    window.addEventListener('orientationchange', settle)
+    window.addEventListener('pageshow', settle)
+    window.visualViewport?.addEventListener('resize', sync)
+    document.addEventListener('visibilitychange', onVisibility)
+
+    return () => {
+      window.removeEventListener('resize', sync)
+      window.removeEventListener('orientationchange', settle)
+      window.removeEventListener('pageshow', settle)
+      window.visualViewport?.removeEventListener('resize', sync)
+      document.removeEventListener('visibilitychange', onVisibility)
+      frames.forEach((frame) => window.cancelAnimationFrame(frame))
+      timers.forEach((timer) => window.clearTimeout(timer))
+    }
+  }, [])
 }
 
 function IconButton({ children, label, onClick }: { children: ReactNode; label: string; onClick?: () => void }) {
@@ -509,6 +546,7 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
 }
 
 export function MobileApp() {
+  useMobileViewportSync()
   const { pathname } = useLocation()
   const { profile } = useProfileScope()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
