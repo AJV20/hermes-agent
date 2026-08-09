@@ -3,7 +3,15 @@ import { describe, expect, it } from 'vitest'
 
 import { buildServiceWorkerUrl } from './pwa'
 
-describe('PWA cache busting', () => {
+describe('PWA mobile shell', () => {
+  it('disables viewport zooming in the installed mobile app', () => {
+    const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8')
+    const viewport = html.match(/<meta\s+name="viewport"\s+content="([^"]+)"/s)?.[1]
+
+    expect(viewport).toContain('maximum-scale=1.0')
+    expect(viewport).toContain('user-scalable=no')
+  })
+
   it('versions the service-worker URL from the current hashed app bundle', () => {
     expect(buildServiceWorkerUrl('', '/assets/index-CtC5HFVK.js')).toBe(
       '/sw.js?v=index-CtC5HFVK.js',
