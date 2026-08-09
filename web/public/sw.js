@@ -1,4 +1,5 @@
-const HERMES_PWA_CACHE = "hermes-dashboard-static-v1";
+const HERMES_PWA_REVISION = new URL(self.location.href).searchParams.get("v") ?? "v2";
+const HERMES_PWA_CACHE = `hermes-dashboard-static-${HERMES_PWA_REVISION}`;
 const STATIC_PATH_PREFIXES = [
   "/assets/",
   "/fonts/",
@@ -21,16 +22,19 @@ self.addEventListener("install", () => {
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches
-      .keys()
-      .then((keys) =>
-        Promise.all(
-          keys
-            .filter((key) => key.startsWith("hermes-dashboard-static-") && key !== HERMES_PWA_CACHE)
-            .map((key) => caches.delete(key)),
-        ),
-      )
-      .then(() => self.clients.claim()),
+    (async () => {
+      const keys = await caches.keys();
+      const previous = keys.filter(
+        (key) => key.startsWith("hermes-dashboard-static-") && key !== HERMES_PWA_CACHE,
+      );
+      await Promise.all(previous.map((key) => caches.delete(key)));
+      await caches.open(HERMES_PWA_CACHE);
+      await self.clients.claim();
+      if (previous.length > 0) {
+        const clients = await self.clients.matchAll({ type: "window" });
+        await Promise.all(clients.map((client) => client.navigate(client.url)));
+      }
+    })(),
   );
 });
 

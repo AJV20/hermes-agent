@@ -17,13 +17,21 @@ function normalizeBasePath(raw: string | undefined): string {
   return withLead.replace(/\/+$/, "");
 }
 
+export function buildServiceWorkerUrl(basePath: string, scriptSrc: string): string {
+  const revision = scriptSrc.split("/").pop() || "app";
+  return `${basePath}/sw.js?v=${encodeURIComponent(revision)}`;
+}
+
 export function registerHermesPwa(): void {
   if (typeof window === "undefined" || !("serviceWorker" in navigator)) {
     return;
   }
 
   const basePath = normalizeBasePath(window.__HERMES_BASE_PATH__);
-  const swUrl = `${basePath}/sw.js`;
+  const moduleScript = Array.from(document.scripts).find(
+    (script) => script.type === "module" && script.src,
+  );
+  const swUrl = buildServiceWorkerUrl(basePath, moduleScript?.src ?? "app");
   const scope = basePath ? `${basePath}/` : "/";
 
   window.addEventListener("load", () => {
