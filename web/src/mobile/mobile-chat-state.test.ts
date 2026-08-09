@@ -89,7 +89,8 @@ describe('hydrateMobileResume', () => {
           user: 'Explain the release'
         },
         queued: { user: 'Then summarize it' },
-        running: true,
+        running: false,
+        status: 'working',
         session_id: 'runtime-resumed'
       }
     )
@@ -100,7 +101,7 @@ describe('hydrateMobileResume', () => {
       { role: 'user', content: 'Explain the release' },
       { role: 'user', content: 'Focus on mobile' },
       { role: 'assistant', content: 'Partial answer', streaming: true },
-      { role: 'user', content: 'Then summarize it' }
+      { role: 'user', content: 'Then summarize it', queued: true }
     ])
 
     const restarted = applyMobileGatewayEvent(hydrated, {

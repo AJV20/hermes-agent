@@ -500,6 +500,20 @@
   margin: 0;
   white-space: pre-wrap;
 }
+.mobile-bubble.is-queued {
+  border: 1px dashed color-mix(in srgb, var(--mobile-accent) 60%, transparent);
+  background: color-mix(in srgb, var(--mobile-accent) 14%, var(--mobile-panel));
+  color: var(--mobile-text);
+}
+.mobile-queued-label {
+  display: block;
+  margin-bottom: 0.2rem;
+  color: var(--mobile-muted);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
 .mobile-bubble.is-assistant {
   margin-right: auto;
   border: 1px solid var(--mobile-line);

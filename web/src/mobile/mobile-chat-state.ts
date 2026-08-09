@@ -4,6 +4,7 @@ import type { SessionMessage } from '@/lib/api'
 export interface MobileChatMessage {
   content: string
   id: string
+  queued?: boolean
   role: 'assistant' | 'user'
   streaming?: boolean
 }
@@ -33,6 +34,7 @@ export interface MobileResumeSnapshot {
   } | null
   queued?: { user?: string } | null
   running?: boolean
+  status?: string
   session_id: string
 }
 
@@ -85,16 +87,19 @@ export function hydrateMobileResume(
     role: MobileChatMessage['role'],
     content: string | undefined,
     id: string,
-    streaming = false
+    streaming = false,
+    queued = false
   ) => {
     const value = typeof content === 'string' ? content : ''
     if (!value.trim() && !streaming) return
     const last = messages.at(-1)
     if (last?.role === role && last.content === value) {
-      if (streaming && !last.streaming) messages[messages.length - 1] = { ...last, streaming: true }
+      if ((streaming && !last.streaming) || (queued && !last.queued)) {
+        messages[messages.length - 1] = { ...last, queued: queued || last.queued, streaming: streaming || last.streaming }
+      }
       return
     }
-    messages.push({ content: value, id, role, streaming })
+    messages.push({ content: value, id, queued, role, streaming })
   }
 
   const inflight = snapshot.inflight
@@ -107,14 +112,18 @@ export function hydrateMobileResume(
       'assistant',
       inflight.assistant,
       'resume-inflight-assistant',
-      Boolean(snapshot.running && inflight.streaming && !inflight.error)
+      Boolean(inflight.streaming && !inflight.error)
     )
   }
-  append('user', snapshot.queued?.user, 'resume-queued-user')
+  append('user', snapshot.queued?.user, 'resume-queued-user', false, true)
+
+  const busyStatus = snapshot.status === 'starting'
+    || snapshot.status === 'working'
+    || snapshot.status === 'waiting'
 
   return {
     ...state,
-    busy: Boolean(snapshot.running),
+    busy: Boolean(snapshot.running || inflight?.streaming || busyStatus),
     error: inflight?.error || state.error,
     messages
   }

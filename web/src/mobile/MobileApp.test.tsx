@@ -406,7 +406,7 @@ describe('MobileApp', () => {
     expect(apiMocks.getSessionMessages).toHaveBeenCalledWith('session-1', 'mabel')
     expect(gatewayMocks.request).toHaveBeenCalledWith(
       'session.resume',
-      expect.objectContaining({ profile: 'mabel', session_id: 'session-1' })
+      expect.objectContaining({ omit_messages: true, profile: 'mabel', session_id: 'session-1' })
     )
   })
 

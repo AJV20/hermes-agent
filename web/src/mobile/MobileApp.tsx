@@ -451,7 +451,8 @@ function MoreScreen() {
 
 function ChatBubble({ message }: { message: MobileChatMessage }) {
   return (
-    <article className={`mobile-bubble is-${message.role}`}>
+    <article className={`mobile-bubble is-${message.role}${message.queued ? ' is-queued' : ''}`}>
+      {message.queued && <span className="mobile-queued-label">Queued</span>}
       {message.role === 'assistant' ? (
         <Markdown content={message.content} streaming={message.streaming} />
       ) : (
@@ -496,6 +497,7 @@ function ChatScreen({
       if (resumableId) {
         const resumed = await gateway.request<MobileResumeSnapshot>('session.resume', {
           cols: 48,
+          omit_messages: true,
           ...(profile ? { profile } : {}),
           session_id: resumableId,
           source: 'web'
@@ -558,6 +560,7 @@ function ChatScreen({
           ),
           gateway.request<MobileResumeSnapshot>('session.resume', {
             cols: 48,
+            omit_messages: true,
             ...(profile ? { profile } : {}),
             session_id: storedSessionId,
             source: 'web'
