@@ -2,7 +2,13 @@ import {
   ArrowDown,
   ArrowLeft,
   Bot,
+  Camera,
   CheckCircle2,
+  Copy,
+  Mic,
+  RotateCcw,
+  Share2,
+  Square,
   ChevronRight,
   Clock3,
   FileUp,
@@ -31,6 +37,7 @@ import { Link, Navigate, useLocation, useNavigate } from 'react-router'
 import { Markdown } from '@/components/Markdown'
 import { useProfileScope } from '@/contexts/useProfileScope'
 import { api, HERMES_BASE_PATH, type CronJob, type SessionInfo, type StatusResponse } from '@/lib/api'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { GatewayClient, type GatewayEvent } from '@/lib/gatewayClient'
 import {
   applyMobileGatewayEvent,
@@ -41,6 +48,9 @@ import {
   type MobileResumeSnapshot
 } from './mobile-chat-state'
 import { desktopDocumentHref } from './mobile-desktop-link'
+import { shareMessageText } from './chat/message-actions'
+import { getSpeechRecognitionConstructor, type SpeechRecognitionConstructor, type SpeechRecognitionLike } from './composer/speech-recognition'
+import { createMobileAttachment, revokeAttachmentPreview, type MobileAttachment } from './media/attachment-state'
 import { syncMobileViewportHeight } from './mobile-viewport'
 import './mobile-app.css'
 
@@ -97,11 +107,6 @@ function saveOutbox(profile: string, storedSessionId: string, value: string) {
   } catch {
     // The in-memory outbox still works when storage is unavailable.
   }
-}
-
-interface MobileAttachment {
-  file: File
-  id: string
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -962,9 +967,12 @@ function MoreScreen() {
   )
 }
 
-function ChatBubble({ message }: { message: MobileChatMessage }) {
+function ChatBubble({ message, onActions }: { message: MobileChatMessage; onActions: () => void }) {
   return (
     <article className={`mobile-bubble is-${message.role}${message.queued ? ' is-queued' : ''}`}>
+      <button aria-label={`Actions for message: ${message.content.slice(0, 40)}`} className="mobile-message-actions" onClick={onActions} type="button">
+        <MoreHorizontal />
+      </button>
       {message.queued && <span className="mobile-queued-label">Queued</span>}
       {message.role === 'assistant' ? (
         <Markdown content={message.content} streaming={message.streaming} />
@@ -974,6 +982,42 @@ function ChatBubble({ message }: { message: MobileChatMessage }) {
     </article>
   )
 }
+
+function MessageActionSheet({
+  message,
+  onClose,
+  onRetry
+}: {
+  message: MobileChatMessage
+  onClose: () => void
+  onRetry: (text: string) => void
+}) {
+  const [notice, setNotice] = useState<string | null>(null)
+  const copy = useCallback(async () => {
+    setNotice(await copyTextToClipboard(message.content) ? 'Copied' : 'Could not copy')
+  }, [message.content])
+  const share = useCallback(async () => {
+    const result = await shareMessageText(message.content)
+    if (result === 'copied') setNotice('Copied instead')
+    else if (result === 'unavailable') setNotice('Could not share')
+  }, [message.content])
+  return (
+    <div className="mobile-sheet-backdrop" onClick={onClose}>
+      <section aria-label="Message actions" aria-modal="true" className="mobile-bottom-sheet mobile-message-action-sheet" onClick={event => event.stopPropagation()} role="dialog">
+        <div className="mobile-sheet-handle" />
+        <h2>Message</h2>
+        <button aria-label="Copy message" onClick={() => void copy()} type="button"><Copy /> Copy</button>
+        <button aria-label="Share message" onClick={() => void share()} type="button"><Share2 /> Share</button>
+        {message.role === 'user' && (
+          <button aria-label="Retry message in composer" onClick={() => onRetry(message.content)} type="button"><RotateCcw /> Retry in composer</button>
+        )}
+        {notice && <p className="mobile-action-notice" role="status">{notice}</p>}
+        <button className="mobile-sheet-cancel" onClick={onClose} type="button">Cancel</button>
+      </section>
+    </div>
+  )
+}
+
 
 function ChatScreen({
   onSessionCreated,
@@ -991,10 +1035,17 @@ function ChatScreen({
   const pendingStoredId = useRef<string | null>(null)
   const submitInFlight = useRef(false)
   const filePickerRef = useRef<HTMLInputElement | null>(null)
+  const cameraPickerRef = useRef<HTMLInputElement | null>(null)
+  const attachmentRef = useRef<MobileAttachment[]>([])
+  const canceledAttachmentIds = useRef(new Set<string>())
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const [chat, setChat] = useState<MobileChatState>(EMPTY_CHAT)
   const [draft, setDraft] = useState(() => loadDraft(profile, storedSessionId))
   const [queuedText, setQueuedText] = useState(() => loadOutbox(profile, storedSessionId))
   const [attachments, setAttachments] = useState<MobileAttachment[]>([])
+  const [selectedMessage, setSelectedMessage] = useState<MobileChatMessage | null>(null)
+  const [voiceActive, setVoiceActive] = useState(false)
+  const [voiceError, setVoiceError] = useState<string | null>(null)
   const [connected, setConnected] = useState(false)
   const [ready, setReady] = useState(false)
   const [connectionEpoch, setConnectionEpoch] = useState(0)
@@ -1012,6 +1063,15 @@ function ChatScreen({
   useEffect(() => {
     saveOutbox(profile, storedSessionId, queuedText)
   }, [profile, queuedText, storedSessionId])
+
+  useEffect(() => {
+    attachmentRef.current = attachments
+  }, [attachments])
+
+  useEffect(() => () => {
+    attachmentRef.current.forEach(revokeAttachmentPreview)
+    recognitionRef.current?.stop()
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -1202,7 +1262,7 @@ function ChatScreen({
     async (event: FormEvent) => {
       event.preventDefault()
       const text = draft.trim()
-      const pendingAttachments = attachments
+      const pendingAttachments = attachments.filter(attachment => attachment.status !== 'canceled')
       if ((!text && !pendingAttachments.length) || chat.busy || submitInFlight.current) return
       if (!ready) {
         if (pendingAttachments.length) {
@@ -1219,7 +1279,11 @@ function ChatScreen({
       const optimisticContent = [text, attachmentNames ? `📎 ${attachmentNames}` : ''].filter(Boolean).join('\n')
       submitInFlight.current = true
       setDraft('')
-      setAttachments([])
+      setAttachments(current => current.map(attachment => (
+        pendingAttachments.some(pending => pending.id === attachment.id)
+          ? { ...attachment, error: undefined, status: 'reading' }
+          : attachment
+      )))
       setChat(current => ({
         ...current,
         busy: true,
@@ -1251,7 +1315,11 @@ function ChatScreen({
         }
         const fileRefs: string[] = []
         for (const attachment of pendingAttachments) {
+          if (canceledAttachmentIds.current.has(attachment.id)) continue
+          setAttachments(current => current.map(item => item.id === attachment.id ? { ...item, status: 'reading' } : item))
           const dataUrl = await readFileAsDataUrl(attachment.file)
+          if (canceledAttachmentIds.current.has(attachment.id)) continue
+          setAttachments(current => current.map(item => item.id === attachment.id ? { ...item, status: 'uploading' } : item))
           if (attachment.file.type.startsWith('image/')) {
             const attached = await gateway.request<{ attached?: boolean; message?: string }>('image.attach_bytes', {
               content_base64: dataUrl.slice(dataUrl.indexOf(',') + 1),
@@ -1271,12 +1339,22 @@ function ChatScreen({
             if (!attached.attached || !attached.ref_text) {
               throw new Error(attached.message || `Could not attach ${attachment.file.name}`)
             }
-            fileRefs.push(attached.ref_text)
+            if (!canceledAttachmentIds.current.has(attachment.id)) fileRefs.push(attached.ref_text)
           }
+          setAttachments(current => current.map(item => item.id === attachment.id
+            ? { ...item, status: canceledAttachmentIds.current.has(attachment.id) ? 'canceled' : 'staged' }
+            : item
+          ))
         }
         const promptText = [...fileRefs, text].filter(Boolean).join('\n\n')
         await gateway.request('prompt.submit', { session_id: sid, text: promptText }, PROMPT_TIMEOUT_MS)
         submitInFlight.current = false
+        setAttachments(current => {
+          const completed = current.filter(attachment => pendingAttachments.some(pending => pending.id === attachment.id))
+          completed.forEach(revokeAttachmentPreview)
+          return current.filter(attachment => !pendingAttachments.some(pending => pending.id === attachment.id))
+        })
+        pendingAttachments.forEach(attachment => canceledAttachmentIds.current.delete(attachment.id))
         if (pendingStoredId.current) {
           const durable = pendingStoredId.current
           pendingStoredId.current = null
@@ -1286,14 +1364,16 @@ function ChatScreen({
       } catch (error) {
         submitInFlight.current = false
         setDraft(current => current.trim() ? current : text)
-        setAttachments(current => {
-          const currentIds = new Set(current.map(attachment => attachment.id))
-          return [...pendingAttachments.filter(attachment => !currentIds.has(attachment.id)), ...current]
-        })
+        const message = error instanceof Error ? error.message : 'Could not send message'
+        setAttachments(current => current.map(attachment => (
+          pendingAttachments.some(pending => pending.id === attachment.id) && attachment.status !== 'canceled'
+            ? { ...attachment, error: message, status: 'failed' }
+            : attachment
+        )))
         setChat(current => ({
           ...current,
           busy: false,
-          error: error instanceof Error ? error.message : 'Could not send message',
+          error: message,
           messages: current.messages.filter(message => message.id !== optimisticId)
         }))
       }
@@ -1311,16 +1391,73 @@ function ChatScreen({
         setChat(current => ({ ...current, error: `${file.name} must be smaller than ${maxMb} MB.` }))
         continue
       }
-      accepted.push({
-        file,
-        id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`
-      })
+      const id = `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`
+      accepted.push(createMobileAttachment(file, id))
     }
     if (accepted.length) {
       setAttachments(current => [...current, ...accepted])
       setChat(current => ({ ...current, error: null }))
     }
   }, [])
+
+  const speechRecognitionConstructor = typeof window === 'undefined'
+    ? undefined
+    : getSpeechRecognitionConstructor(window as unknown as { SpeechRecognition?: SpeechRecognitionConstructor; webkitSpeechRecognition?: SpeechRecognitionConstructor })
+
+  const removeAttachment = useCallback((id: string) => {
+    canceledAttachmentIds.current.delete(id)
+    setAttachments(current => {
+      const attachment = current.find(item => item.id === id)
+      if (attachment) revokeAttachmentPreview(attachment)
+      return current.filter(item => item.id !== id)
+    })
+  }, [])
+
+  const cancelAttachment = useCallback((id: string) => {
+    canceledAttachmentIds.current.add(id)
+    setAttachments(current => current.map(attachment => attachment.id === id
+      ? { ...attachment, status: 'canceled' }
+      : attachment
+    ))
+  }, [])
+
+  const startVoiceDictation = useCallback(() => {
+    if (!speechRecognitionConstructor) return
+    const recognition = new speechRecognitionConstructor()
+    recognitionRef.current = recognition
+    recognition.continuous = false
+    recognition.interimResults = false
+    recognition.lang = navigator.language || 'en-US'
+    recognition.onresult = event => {
+      const transcript = Array.from(event.results).map(result => result[0]?.transcript ?? '').join(' ').trim()
+      if (transcript) setDraft(current => [current, transcript].filter(Boolean).join(current ? ' ' : ''))
+    }
+    recognition.onerror = event => setVoiceError(event.error ? `Voice dictation: ${event.error}` : 'Voice dictation failed.')
+    recognition.onend = () => {
+      recognitionRef.current = null
+      setVoiceActive(false)
+    }
+    setVoiceError(null)
+    setVoiceActive(true)
+    try {
+      recognition.start()
+    } catch {
+      recognitionRef.current = null
+      setVoiceActive(false)
+      setVoiceError('Voice dictation could not start.')
+    }
+  }, [speechRecognitionConstructor])
+
+  const stopVoiceDictation = useCallback(() => recognitionRef.current?.stop(), [])
+
+  const stopResponse = useCallback(async () => {
+    if (!runtimeId.current) return
+    try {
+      await gateway.request('session.interrupt', { session_id: runtimeId.current })
+    } catch (error) {
+      setChat(current => ({ ...current, error: error instanceof Error ? error.message : 'Could not stop Hermes.' }))
+    }
+  }, [gateway])
 
   return (
     <div className={`mobile-chat-shell${attachments.length ? ' has-attachments' : ''}`}>
@@ -1349,7 +1486,7 @@ function ChatScreen({
           </div>
         )}
         {chat.messages.map(message => (
-          <ChatBubble key={message.id} message={message} />
+          <ChatBubble key={message.id} message={message} onActions={() => setSelectedMessage(message)} />
         ))}
         {!!chat.tools.length && (
           <div className="mobile-tool-strip">
@@ -1359,6 +1496,11 @@ function ChatScreen({
               </span>
             ))}
           </div>
+        )}
+        {chat.busy && runtimeId.current && (
+          <button aria-label="Stop response" className="mobile-stop-response" onClick={() => void stopResponse()} type="button">
+            <Square /> Stop response
+          </button>
         )}
         {chat.error && (
           <div className="mobile-error" role="alert">
@@ -1412,17 +1554,20 @@ function ChatScreen({
         {!!attachments.length && (
           <div className="mobile-attachment-list" aria-label="Selected attachments">
             {attachments.map(attachment => (
-              <span className="mobile-attachment-chip" key={attachment.id}>
-                <FileUp />
-                <span>{attachment.file.name}</span>
-                <button
-                  aria-label={`Remove ${attachment.file.name}`}
-                  onClick={() => setAttachments(current => current.filter(item => item.id !== attachment.id))}
-                  type="button"
-                >
-                  <X />
-                </button>
-              </span>
+              <div className="mobile-attachment-chip" key={attachment.id}>
+                {attachment.previewUrl ? <img alt={`Preview ${attachment.file.name}`} src={attachment.previewUrl} /> : <FileUp />}
+                <span className="mobile-attachment-copy">
+                  <strong>{attachment.file.name}</strong>
+                  <small>{attachment.status}{attachment.error ? `: ${attachment.error}` : ''}</small>
+                </span>
+                {attachment.status === 'reading' ? (
+                  <button aria-label={`Cancel ${attachment.file.name}`} onClick={() => cancelAttachment(attachment.id)} type="button"><X /></button>
+                ) : attachment.status === 'uploading' ? (
+                  <small className="mobile-attachment-lock">Finishing…</small>
+                ) : (
+                  <button aria-label={`Remove ${attachment.file.name}`} onClick={() => removeAttachment(attachment.id)} type="button"><X /></button>
+                )}
+              </div>
             ))}
           </div>
         )}
@@ -1438,9 +1583,32 @@ function ChatScreen({
           ref={filePickerRef}
           type="file"
         />
-        <IconButton disabled={chat.busy || submitInFlight.current} label="Add attachment" onClick={() => filePickerRef.current?.click()}>
-          <Plus />
-        </IconButton>
+        <input
+          accept="image/*"
+          aria-label="Take a photo"
+          capture="environment"
+          className="mobile-file-picker"
+          disabled={chat.busy || submitInFlight.current}
+          onChange={event => {
+            if (event.currentTarget.files) selectAttachments(event.currentTarget.files)
+            event.currentTarget.value = ''
+          }}
+          ref={cameraPickerRef}
+          type="file"
+        />
+        <div className="mobile-composer-tools">
+          <IconButton disabled={chat.busy || submitInFlight.current} label="Add attachment" onClick={() => filePickerRef.current?.click()}>
+            <Plus />
+          </IconButton>
+          <IconButton disabled={chat.busy || submitInFlight.current} label="Take a photo" onClick={() => cameraPickerRef.current?.click()}>
+            <Camera />
+          </IconButton>
+          {speechRecognitionConstructor && (
+            <IconButton disabled={chat.busy} label={voiceActive ? 'Stop voice dictation' : 'Start voice dictation'} onClick={voiceActive ? stopVoiceDictation : startVoiceDictation}>
+              <Mic />
+            </IconButton>
+          )}
+        </div>
         <textarea
           aria-label="Message Hermes"
           disabled={chat.busy}
@@ -1458,6 +1626,18 @@ function ChatScreen({
           <Send />
         </button>
       </form>
+      {voiceActive && <div className="mobile-voice-status" role="status">Listening… tap the microphone to stop.</div>}
+      {voiceError && <div className="mobile-voice-status is-error" role="alert">{voiceError}</div>}
+      {selectedMessage && (
+        <MessageActionSheet
+          message={selectedMessage}
+          onClose={() => setSelectedMessage(null)}
+          onRetry={text => {
+            setDraft(text)
+            setSelectedMessage(null)
+          }}
+        />
+      )}
     </div>
   )
 }

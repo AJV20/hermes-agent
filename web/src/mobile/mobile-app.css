@@ -1099,6 +1099,90 @@
   font: inherit;
   font-weight: 800;
 }
+.mobile-attachment-lock {
+  color: var(--mobile-muted);
+  font-size: 0.64rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.mobile-message-actions {
+  float: right;
+  width: 2rem;
+  height: 2rem;
+  margin: -0.35rem -0.4rem 0.2rem 0.4rem;
+  border: 0;
+  border-radius: 0.6rem;
+  background: transparent;
+  color: currentColor;
+}
+.mobile-message-actions svg,
+.mobile-stop-response svg,
+.mobile-message-action-sheet button svg {
+  width: 1rem;
+  height: 1rem;
+}
+.mobile-message-action-sheet > button:not(.mobile-sheet-cancel),
+.mobile-stop-response {
+  width: 100%;
+  min-height: 3rem;
+  margin: 0.25rem 0;
+  border: 1px solid var(--mobile-line);
+  border-radius: 0.75rem;
+  background: var(--mobile-panel);
+  color: var(--mobile-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font: inherit;
+}
+.mobile-stop-response {
+  width: auto;
+  margin: 0 0 0.75rem;
+  padding: 0 0.8rem;
+  color: var(--mobile-accent);
+}
+.mobile-action-notice,
+.mobile-voice-status {
+  margin: 0.4rem 0.55rem;
+  color: var(--mobile-muted);
+  font-size: 0.7rem;
+}
+.mobile-voice-status.is-error {
+  color: #ffb4b4;
+}
+.mobile-composer-tools {
+  min-height: 3rem;
+  display: flex;
+  align-items: end;
+  gap: 0.1rem;
+  overflow-x: auto;
+}
+.mobile-composer-tools .mobile-icon-button {
+  flex: 0 0 2.25rem;
+  width: 2.25rem;
+  height: 3rem;
+}
+.mobile-attachment-chip img {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.55rem;
+  object-fit: cover;
+}
+.mobile-attachment-copy {
+  min-width: 0;
+  display: grid;
+  gap: 0.1rem;
+}
+.mobile-attachment-copy strong,
+.mobile-attachment-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-attachment-copy small {
+  color: var(--mobile-muted);
+}
 @media (min-width: 48rem) {
   .mobile-app-shell,
   .mobile-chat-shell {

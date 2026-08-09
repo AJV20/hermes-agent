@@ -1321,6 +1321,95 @@ describe('MobileApp', () => {
     expect(container.textContent).not.toContain('History from A')
   })
 
+  it('copies, shares with fallback, and restores a user message for explicit retry', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const share = vi.fn().mockRejectedValue(new Error('native share unavailable'))
+    Object.defineProperty(window, 'isSecureContext', { configurable: true, value: true })
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    Object.defineProperty(navigator, 'share', { configurable: true, value: share })
+    apiMocks.getSessionMessages.mockResolvedValueOnce({
+      messages: [{ id: 91, role: 'user', content: 'Retry this exact request', timestamp: 1 } as never],
+      session_id: 'session-1'
+    })
+    await renderAt('/mobile/chat/session-1')
+
+    const actions = container.querySelector('button[aria-label^="Actions for message: Retry this"]') as HTMLButtonElement
+    await act(async () => actions.click())
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Copy message"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    expect(writeText).toHaveBeenCalledWith('Retry this exact request')
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Share message"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(share).toHaveBeenCalledWith({ text: 'Retry this exact request' })
+    expect(writeText).toHaveBeenCalledTimes(2)
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Retry message in composer"]') as HTMLButtonElement).click()
+    })
+    expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Retry this exact request')
+    expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(0)
+  })
+
+  it('stops an active response through the current runtime session', async () => {
+    gatewayMocks.request.mockImplementation(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          inflight: { assistant: 'Still working', streaming: true, user: 'Long task' },
+          running: true,
+          session_id: 'runtime-live',
+          status: 'working'
+        }
+      }
+      return {}
+    })
+    await renderAt('/mobile/chat/session-1')
+    const stop = container.querySelector('button[aria-label="Stop response"]') as HTMLButtonElement
+    expect(stop).not.toBeNull()
+    await act(async () => {
+      stop.click()
+      await Promise.resolve()
+    })
+    expect(gatewayMocks.request).toHaveBeenCalledWith('session.interrupt', { session_id: 'runtime-live' })
+  })
+
+  it('renders a camera capture input alongside the document picker', async () => {
+    await renderAt('/mobile/chat/new')
+
+    const camera = container.querySelector('input[aria-label="Take a photo"]') as HTMLInputElement
+    expect(camera).not.toBeNull()
+    expect(camera.accept).toBe('image/*')
+    expect(camera.getAttribute('capture')).toBe('environment')
+    expect(container.querySelector('button[aria-label="Take a photo"]')).not.toBeNull()
+  })
+
+  it('does not expose voice dictation when SpeechRecognition is unsupported', async () => {
+    Object.defineProperty(window, 'SpeechRecognition', { configurable: true, value: undefined })
+    Object.defineProperty(window, 'webkitSpeechRecognition', { configurable: true, value: undefined })
+    await renderAt('/mobile/chat/new')
+
+    expect(container.querySelector('button[aria-label="Start voice dictation"]')).toBeNull()
+  })
+
+  it('shows an image thumbnail and revokes its object URL when removed', async () => {
+    const createObjectURL = vi.fn(() => 'blob:photo-preview')
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL })
+    await renderAt('/mobile/chat/new')
+
+    const picker = container.querySelector('input[type="file"]') as HTMLInputElement
+    const image = new File(['photo'], 'thumbnail.png', { type: 'image/png' })
+    Object.defineProperty(picker, 'files', { configurable: true, value: [image] })
+    await act(async () => picker.dispatchEvent(new Event('change', { bubbles: true })))
+
+    expect(container.querySelector('img[alt="Preview thumbnail.png"]')?.getAttribute('src')).toBe('blob:photo-preview')
+    await act(async () => (container.querySelector('button[aria-label="Remove thumbnail.png"]') as HTMLButtonElement).click())
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:photo-preview')
+  })
+
   it('cannot submit to the previous runtime while switching sessions', async () => {
     let resumeSessionB: ((value: { session_id: string }) => void) | undefined
     gatewayMocks.request.mockImplementation((method: string, params: { session_id?: string }) => {
