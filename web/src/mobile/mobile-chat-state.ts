@@ -68,7 +68,7 @@ export function projectSessionMessages(messages: SessionMessage[]): MobileChatMe
     return [
       {
         content,
-        id: `stored-${index}-${message.timestamp ?? 0}`,
+        id: typeof message.id === 'number' ? `db-${message.id}` : `stored-${index}-${message.timestamp ?? 0}`,
         role: message.role,
         streaming: false
       }
@@ -125,6 +125,9 @@ export function applyMobileGatewayEvent(
   event: Pick<GatewayEvent, 'payload' | 'type'>
 ): MobileChatState {
   if (event.type === 'message.start') {
+    if (activeAssistantIndex(state.messages) >= 0) {
+      return { ...state, busy: true, error: null, tools: [] }
+    }
     return {
       ...state,
       busy: true,

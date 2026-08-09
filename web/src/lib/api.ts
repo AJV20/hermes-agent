@@ -308,6 +308,12 @@ export interface SessionQueryOptions {
   excludeSources?: string[];
 }
 
+export interface SessionMessageQueryOptions {
+  limit?: number;
+  offset?: number;
+  order?: "latest" | "oldest";
+}
+
 function normalizeSessionQueryOptions(
   profileOrOptions?: string | SessionQueryOptions,
   order: "created" | "recent" = "created",
@@ -383,13 +389,21 @@ export const api = {
       ),
     );
   },
-  getSessionMessages: (id: string, profile = getManagementProfile()) =>
-    fetchJSON<SessionMessagesResponse>(
+  getSessionMessages: (
+    id: string,
+    profile = getManagementProfile(),
+    options: SessionMessageQueryOptions = {},
+  ) => {
+    const limit = Math.min(500, Math.max(1, Math.floor(options.limit ?? 500)));
+    const offset = Math.max(0, Math.floor(options.offset ?? 0));
+    const order = options.order ?? "latest";
+    return fetchJSON<SessionMessagesResponse>(
       appendProfileParam(
-        `/api/sessions/${encodeURIComponent(id)}/messages?limit=500&order=latest`,
+        `/api/sessions/${encodeURIComponent(id)}/messages?limit=${limit}&offset=${offset}&order=${order}`,
         profile,
       ),
-    ),
+    );
+  },
   getSessionDetail: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionInfo>(
       appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
@@ -1993,6 +2007,7 @@ export interface WhatsAppOnboardingApplyResponse {
 }
 
 export interface SessionMessage {
+  id?: number;
   role: "user" | "assistant" | "system" | "tool";
   content: string | null;
   tool_calls?: Array<{

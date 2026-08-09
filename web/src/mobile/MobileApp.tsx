@@ -17,7 +17,7 @@ import {
   Sparkles,
   Wifi
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router'
 
 import { Markdown } from '@/components/Markdown'
@@ -481,8 +481,10 @@ function ChatScreen({
   const [connected, setConnected] = useState(false)
   const [ready, setReady] = useState(false)
   const [showJumpLatest, setShowJumpLatest] = useState(false)
+  const [historyPage, setHistoryPage] = useState({ hasEarlier: false, loading: false, nextOffset: 0 })
   const shouldAutoFollowRef = useRef(true)
   const threadRef = useRef<HTMLDivElement | null>(null)
+  const pendingPrependRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -564,6 +566,11 @@ function ChatScreen({
         if (cancelled) return
         runtimeId.current = resumed.session_id
         setReady(true)
+        if (storedResult.ok) {
+          const returned = storedResult.stored.pagination?.returned ?? storedResult.stored.messages.length
+          const limit = storedResult.stored.pagination?.limit ?? 500
+          setHistoryPage({ hasEarlier: returned >= limit, loading: false, nextOffset: returned })
+        }
         setChat(current => hydrateMobileResume({
           ...current,
           error: storedResult.ok ? current.error : 'Could not load conversation history.',
@@ -585,6 +592,15 @@ function ChatScreen({
       gateway.close()
     }
   }, [gateway, isNew, navigate, profile, storedSessionId])
+
+  useLayoutEffect(() => {
+    const node = threadRef.current
+    const pending = pendingPrependRef.current
+    if (!node || !pending) return
+    node.scrollTop = pending.scrollTop + (node.scrollHeight - pending.scrollHeight)
+    pendingPrependRef.current = null
+    shouldAutoFollowRef.current = false
+  }, [chat.messages])
 
   useEffect(() => {
     const node = threadRef.current
@@ -612,6 +628,47 @@ function ChatScreen({
     node.scrollTop = node.scrollHeight
     setShowJumpLatest(false)
   }, [])
+
+  const loadEarlier = useCallback(async () => {
+    if (isNew || historyPage.loading || !historyPage.hasEarlier) return
+    const node = threadRef.current
+    if (node) {
+      pendingPrependRef.current = {
+        scrollHeight: node.scrollHeight,
+        scrollTop: node.scrollTop
+      }
+    }
+    setHistoryPage(current => ({ ...current, loading: true }))
+    try {
+      const page = await api.getSessionMessages(storedSessionId, profile, {
+        limit: 500,
+        offset: historyPage.nextOffset,
+        order: 'latest'
+      })
+      const earlier = projectSessionMessages(page.messages)
+      setChat(current => {
+        const existingIds = new Set(current.messages.map(message => message.id))
+        return {
+          ...current,
+          messages: [...earlier.filter(message => !existingIds.has(message.id)), ...current.messages]
+        }
+      })
+      const returned = page.pagination?.returned ?? page.messages.length
+      const limit = page.pagination?.limit ?? 500
+      setHistoryPage(current => ({
+        hasEarlier: returned >= limit,
+        loading: false,
+        nextOffset: current.nextOffset + returned
+      }))
+    } catch (error) {
+      pendingPrependRef.current = null
+      setHistoryPage(current => ({ ...current, loading: false }))
+      setChat(current => ({
+        ...current,
+        error: error instanceof Error ? error.message : 'Could not load earlier messages.'
+      }))
+    }
+  }, [historyPage.hasEarlier, historyPage.loading, historyPage.nextOffset, isNew, profile, storedSessionId])
 
   const submit = useCallback(
     async (event: FormEvent) => {
@@ -680,6 +737,17 @@ function ChatScreen({
         title={isNew ? 'New chat' : 'Hermes'}
       />
       <div className="mobile-chat-thread" onScroll={trackThreadScroll} ref={threadRef}>
+        {historyPage.hasEarlier && (
+          <button
+            aria-label="Load earlier messages"
+            className="mobile-load-earlier"
+            disabled={historyPage.loading}
+            onClick={() => void loadEarlier()}
+            type="button"
+          >
+            {historyPage.loading ? 'Loading earlier messages…' : 'Load earlier messages'}
+          </button>
+        )}
         {!chat.messages.length && (
           <div className="mobile-chat-empty">
             <span className="mobile-wordmark is-large">H</span>

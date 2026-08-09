@@ -8,7 +8,11 @@ const apiMocks = vi.hoisted(() => ({
   getCronJobs: vi.fn(async () => [
     { id: 'daily', enabled: true, name: 'Morning briefing', next_run_at: '2026-08-09T11:00:00Z' }
   ]),
-  getSessionMessages: vi.fn(async () => ({ messages: [], session_id: 'session-1' })),
+  getSessionMessages: vi.fn(async (): Promise<{
+    messages: never[]
+    pagination?: { limit: number; offset: number; order: 'latest' | 'oldest'; returned: number }
+    session_id: string
+  }> => ({ messages: [], session_id: 'session-1' })),
   getSessions: vi.fn(async () => ({
     limit: 20,
     offset: 0,
@@ -298,6 +302,59 @@ describe('MobileApp', () => {
       jump?.click()
     })
     expect(thread.scrollTop).toBe(1000)
+  })
+
+  it('loads earlier transcript pages and preserves the visible scroll anchor', async () => {
+    let resolveOlder!: (value: {
+      messages: never[]
+      pagination: { limit: number; offset: number; order: 'latest'; returned: number }
+      session_id: string
+    }) => void
+    const olderPage = new Promise<{
+      messages: never[]
+      pagination: { limit: number; offset: number; order: 'latest'; returned: number }
+      session_id: string
+    }>(resolve => {
+      resolveOlder = resolve
+    })
+    apiMocks.getSessionMessages
+      .mockResolvedValueOnce({
+        messages: [{ id: 501, role: 'assistant', content: 'Newest visible answer' } as never],
+        pagination: { limit: 500, offset: 0, order: 'latest', returned: 500 },
+        session_id: 'session-1'
+      })
+      .mockReturnValueOnce(olderPage)
+    await renderAt('/mobile/chat/session-1')
+
+    const thread = container.querySelector('.mobile-chat-thread') as HTMLDivElement
+    let scrollHeight = 1000
+    Object.defineProperties(thread, {
+      clientHeight: { configurable: true, value: 300 },
+      scrollHeight: { configurable: true, get: () => scrollHeight }
+    })
+    thread.scrollTop = 100
+    thread.dispatchEvent(new Event('scroll', { bubbles: true }))
+    const loadEarlier = container.querySelector('button[aria-label="Load earlier messages"]') as HTMLButtonElement
+
+    await act(async () => {
+      loadEarlier.click()
+      scrollHeight = 1300
+      resolveOlder({
+        messages: [{ id: 1, role: 'user', content: 'Oldest question' } as never],
+        pagination: { limit: 500, offset: 500, order: 'latest', returned: 1 },
+        session_id: 'session-1'
+      })
+      await olderPage
+    })
+
+    expect(container.textContent).toContain('Oldest question')
+    expect(thread.scrollTop).toBe(400)
+    expect(apiMocks.getSessionMessages).toHaveBeenLastCalledWith(
+      'session-1',
+      '',
+      { limit: 500, offset: 500, order: 'latest' }
+    )
+    expect(container.querySelector('button[aria-label="Load earlier messages"]')).toBeNull()
   })
 
   it('submits a prompt only once when send is triggered twice before streaming starts', async () => {

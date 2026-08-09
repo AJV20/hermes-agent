@@ -88,6 +88,25 @@ describe("fetchJSON", () => {
   });
 });
 
+describe("api.getSessionMessages", () => {
+  it("requests an older latest-page with profile scope", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ messages: [], session_id: "session-1" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getSessionMessages("session-1", "mabel", {
+      limit: 500,
+      offset: 500,
+      order: "latest",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sessions/session-1/messages?limit=500&offset=500&order=latest&profile=mabel",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+});
+
 describe("api.getModelOptions", () => {
   it("requests a live model refresh when asked", async () => {
     vi.stubGlobal("window", {});

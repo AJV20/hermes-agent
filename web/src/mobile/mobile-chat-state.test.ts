@@ -11,13 +11,13 @@ describe('projectSessionMessages', () => {
   it('keeps user and assistant transcript rows while hiding raw tool plumbing', () => {
     expect(
       projectSessionMessages([
-        { role: 'user', content: 'Build the PWA' },
-        { role: 'assistant', content: 'I am on it.' },
-        { role: 'tool', content: 'large internal result', tool_name: 'terminal' }
+        { id: 10, role: 'user', content: 'Build the PWA' },
+        { id: 11, role: 'assistant', content: 'I am on it.' },
+        { id: 12, role: 'tool', content: 'large internal result', tool_name: 'terminal' }
       ])
     ).toMatchObject([
-      { role: 'user', content: 'Build the PWA' },
-      { role: 'assistant', content: 'I am on it.' }
+      { id: 'db-10', role: 'user', content: 'Build the PWA' },
+      { id: 'db-11', role: 'assistant', content: 'I am on it.' }
     ])
   })
 })
@@ -103,7 +103,14 @@ describe('hydrateMobileResume', () => {
       { role: 'user', content: 'Then summarize it' }
     ])
 
-    const continued = applyMobileGatewayEvent(hydrated, {
+    const restarted = applyMobileGatewayEvent(hydrated, {
+      type: 'message.start',
+      payload: {}
+    })
+    expect(restarted.messages.filter(message => message.role === 'assistant')).toHaveLength(2)
+    expect(restarted.messages.filter(message => message.streaming)).toHaveLength(1)
+
+    const continued = applyMobileGatewayEvent(restarted, {
       type: 'message.delta',
       payload: { text: ' continued' }
     })
