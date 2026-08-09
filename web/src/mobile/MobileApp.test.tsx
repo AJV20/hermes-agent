@@ -10,6 +10,16 @@ const apiMocks = vi.hoisted(() => ({
   getCronJobs: vi.fn(async () => [
     { id: 'daily', enabled: true, name: 'Morning briefing', next_run_at: '2026-08-09T11:00:00Z' }
   ]),
+  getCodexQuota: vi.fn(async () => ({
+    available: true,
+    fetched_at: '2026-08-09T12:00:00Z',
+    plan: 'Pro',
+    provider: 'openai-codex',
+    windows: [
+      { label: 'Session', reset_at: '2026-08-09T17:00:00Z', used_percent: 20 },
+      { label: 'Weekly', reset_at: '2026-08-15T12:00:00Z', used_percent: 55 }
+    ]
+  })),
   getMobileNotifications: vi.fn(async () => ({ items: [], total: 0 })),
   pauseCronJob: vi.fn(async (id: string) => ({ id, enabled: false, name: 'Morning briefing' })),
   resumeCronJob: vi.fn(async (id: string) => ({ id, enabled: true, name: 'Morning briefing' })),
@@ -115,6 +125,16 @@ beforeEach(() => {
   apiMocks.getCronJobs.mockReset().mockResolvedValue([
     { id: 'daily', enabled: true, name: 'Morning briefing', next_run_at: '2026-08-09T11:00:00Z' }
   ])
+  apiMocks.getCodexQuota.mockReset().mockResolvedValue({
+    available: true,
+    fetched_at: '2026-08-09T12:00:00Z',
+    plan: 'Pro',
+    provider: 'openai-codex',
+    windows: [
+      { label: 'Session', reset_at: '2026-08-09T17:00:00Z', used_percent: 20 },
+      { label: 'Weekly', reset_at: '2026-08-15T12:00:00Z', used_percent: 55 }
+    ]
+  })
   apiMocks.getMobileNotifications.mockReset().mockResolvedValue({ items: [], total: 0 })
   apiMocks.pauseCronJob.mockReset().mockImplementation(async (id: string) => ({ id, enabled: false, name: 'Morning briefing' }))
   apiMocks.resumeCronJob.mockReset().mockImplementation(async (id: string) => ({ id, enabled: true, name: 'Morning briefing' }))
@@ -200,6 +220,12 @@ async function renderAt(path: string) {
     )
   })
   await act(async () => Promise.resolve())
+  if (path.startsWith('/mobile/chat/')) {
+    await act(async () => {
+      await import('./chat/ChatScreen')
+      await Promise.resolve()
+    })
+  }
 }
 
 describe('MobileApp', () => {
@@ -212,6 +238,25 @@ describe('MobileApp', () => {
     expect(container.textContent).toContain('Connected')
     expect(container.textContent).toContain('New chat')
     expect(container.textContent).toContain('Hermes mobile PWA')
+    expect(container.textContent).toContain('Morning briefing')
+  })
+
+  it('shows profile-scoped Codex quota with session and weekly remaining limits', async () => {
+    profileMocks.profile = 'mabel'
+    await renderAt('/mobile')
+
+    expect(apiMocks.getCodexQuota).toHaveBeenCalledWith('mabel')
+    expect(container.textContent).toContain('Codex quota')
+    expect(container.textContent).toContain('Pro plan')
+    expect(container.textContent).toContain('80% remaining')
+    expect(container.textContent).toContain('45% remaining')
+  })
+
+  it('keeps the Home screen usable when Codex quota is unavailable', async () => {
+    apiMocks.getCodexQuota.mockRejectedValueOnce(new Error('offline'))
+    await renderAt('/mobile')
+
+    expect(container.textContent).toContain('Codex quota unavailable')
     expect(container.textContent).toContain('Morning briefing')
   })
 
@@ -238,6 +283,31 @@ describe('MobileApp', () => {
     expect(later).not.toBeNull()
     await act(async () => later.click())
     expect(container.textContent).not.toContain('A new Hermes Mobile update is ready.')
+  })
+
+  it('keeps chat updates visible and blocks reload while an attachment would be lost', async () => {
+    await renderAt('/mobile/chat/new')
+    const picker = container.querySelector('input[type="file"]') as HTMLInputElement
+    const attachment = new File(['keep me'], 'work.txt', { type: 'text/plain' })
+    Object.defineProperty(picker, 'files', { configurable: true, value: [attachment] })
+    await act(async () => {
+      picker.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    await act(async () => {
+      pwaMocks.messageHandler?.(new MessageEvent('message', { data: { type: 'HERMES_PWA_UPDATE_READY' } }))
+    })
+
+    const banner = container.querySelector('.mobile-chat-route .mobile-update-banner')
+    const install = container.querySelector('button[aria-label="Install Hermes Mobile update"]') as HTMLButtonElement
+    expect(banner).not.toBeNull()
+    expect(install.disabled).toBe(true)
+    expect(banner?.textContent).toContain('Finish or clear your draft, remove attachments, and stop any response before updating.')
+
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Remove work.txt"]') as HTMLButtonElement).click()
+    })
+    await vi.waitFor(() => expect(install.disabled).toBe(false))
   })
 
   it('loads, marks, and dismisses durable notifications within the selected profile', async () => {
@@ -547,7 +617,7 @@ describe('MobileApp', () => {
     })
 
     await vi.waitFor(() => {
-      expect(apiMocks.getSessions).toHaveBeenLastCalledWith(30, 0, { archived: true, order: 'recent', profile: '' })
+      expect(apiMocks.getSessions).toHaveBeenLastCalledWith(30, 0, { archived: 'only', order: 'recent', profile: '' })
     })
     expect(container.textContent).toContain('Archived conversation')
     expect((container.querySelector('input[aria-label="Search conversations"]') as HTMLInputElement).disabled).toBe(true)
@@ -625,6 +695,87 @@ describe('MobileApp', () => {
     expect(apiMocks.getSessions).toHaveBeenLastCalledWith(30, 1, { order: 'recent', profile: '' })
     expect(container.textContent).toContain('First conversation')
     expect(container.textContent).toContain('Older conversation')
+  })
+
+  it('keeps the current conversations visible and offers a retry when loading more fails', async () => {
+    apiMocks.getSessions
+      .mockResolvedValueOnce({
+        limit: 30,
+        offset: 0,
+        sessions: [{ id: 'session-1', title: 'First' } as never],
+        total: 2
+      })
+      .mockRejectedValueOnce(new Error('network down'))
+    await renderAt('/mobile/chats')
+
+    const loadMore = Array.from(container.querySelectorAll('button')).find(candidate => candidate.textContent === 'Load more') as HTMLButtonElement
+    await act(async () => {
+      loadMore.click()
+      await Promise.resolve()
+    })
+
+    expect(container.textContent).toContain('First')
+    expect(container.textContent).toContain('Could not load more conversations.')
+    const retry = Array.from(container.querySelectorAll('button')).find(candidate => candidate.textContent === 'Try loading more') as HTMLButtonElement
+    expect(retry.disabled).toBe(false)
+  })
+
+  it('discards a stale load-more page after the selected profile changes', async () => {
+    let resolveOldPage!: (value: never) => void
+    apiMocks.getSessions.mockImplementation(((_limit: number, offset: number, options: { profile?: string }) => {
+      if (options.profile === 'mabel') {
+        return Promise.resolve({
+          limit: 30,
+          offset: 0,
+          total: 1,
+          sessions: [{
+            id: 'mabel-1', source: 'desktop', model: 'gpt-5.6-sol', title: 'Mabel conversation',
+            started_at: 1, ended_at: null, last_active: 2, is_active: true, message_count: 1,
+            tool_call_count: 0, input_tokens: 1, output_tokens: 1, preview: 'Mabel profile'
+          }]
+        } as never)
+      }
+      if (offset === 0) {
+        return Promise.resolve({
+          limit: 30,
+          offset: 0,
+          total: 2,
+          sessions: [{
+            id: 'default-1', source: 'desktop', model: 'gpt-5.6-sol', title: 'Default conversation',
+            started_at: 1, ended_at: null, last_active: 2, is_active: true, message_count: 1,
+            tool_call_count: 0, input_tokens: 1, output_tokens: 1, preview: 'Default profile'
+          }]
+        } as never)
+      }
+      return new Promise(resolve => {
+        resolveOldPage = resolve
+      })
+    }) as never)
+    await renderAt('/mobile/chats')
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Load more conversations"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+
+    profileMocks.profile = 'mabel'
+    await renderAt('/mobile/chats')
+    await vi.waitFor(() => expect(container.textContent).toContain('Mabel conversation'))
+    await act(async () => {
+      resolveOldPage({
+        limit: 30,
+        offset: 1,
+        total: 2,
+        sessions: [{
+          id: 'default-2', source: 'desktop', model: 'gpt-5.6-sol', title: 'Leaked default conversation',
+          started_at: 1, ended_at: null, last_active: 1, is_active: false, message_count: 1,
+          tool_call_count: 0, input_tokens: 1, output_tokens: 1, preview: 'Wrong profile'
+        }]
+      } as never)
+      await Promise.resolve()
+    })
+
+    expect(container.textContent).toContain('Mabel conversation')
+    expect(container.textContent).not.toContain('Leaked default conversation')
   })
 
   it('opens an attachment picker from the chat composer', async () => {
@@ -790,6 +941,98 @@ describe('MobileApp', () => {
         text: '@file:.hermes/desktop-attachments/notes.txt\n\nSummarize the notes'
       }
     )
+  })
+
+  it('does not create an empty session when the only attachment is canceled while reading', async () => {
+    let finishRead!: () => void
+    class DeferredFileReader {
+      error: DOMException | null = null
+      onerror: ((event: ProgressEvent<FileReader>) => void) | null = null
+      onload: ((event: ProgressEvent<FileReader>) => void) | null = null
+      result: string | ArrayBuffer | null = null
+
+      readAsDataURL() {
+        finishRead = () => {
+          this.result = 'data:text/plain;base64,aGVsbG8='
+          this.onload?.(new ProgressEvent('load') as ProgressEvent<FileReader>)
+        }
+      }
+    }
+    const originalFileReader = globalThis.FileReader
+    Object.defineProperty(globalThis, 'FileReader', { configurable: true, value: DeferredFileReader })
+    try {
+      await renderAt('/mobile/chat/new')
+      const picker = container.querySelector('input[type="file"]') as HTMLInputElement
+      const file = new File(['hello'], 'cancel-me.txt', { type: 'text/plain' })
+      Object.defineProperty(picker, 'files', { configurable: true, value: [file] })
+      await act(async () => picker.dispatchEvent(new Event('change', { bubbles: true })))
+
+      const form = container.querySelector('form') as HTMLFormElement
+      await act(async () => {
+        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+        await vi.waitFor(() => expect(container.querySelector('button[aria-label="Cancel cancel-me.txt"]')).not.toBeNull())
+      })
+      await act(async () => {
+        ;(container.querySelector('button[aria-label="Cancel cancel-me.txt"]') as HTMLButtonElement).click()
+        finishRead()
+        await Promise.resolve()
+      })
+
+      expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'session.create')).toHaveLength(0)
+      expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'file.attach')).toHaveLength(0)
+      expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(0)
+      expect(container.querySelectorAll('.mobile-bubble.is-user')).toHaveLength(0)
+    } finally {
+      Object.defineProperty(globalThis, 'FileReader', { configurable: true, value: originalFileReader })
+    }
+  })
+
+  it('does not submit an earlier prepared attachment after every selected file is canceled', async () => {
+    const pendingReads: Array<() => void> = []
+    class DeferredFileReader {
+      error: DOMException | null = null
+      onerror: ((event: ProgressEvent<FileReader>) => void) | null = null
+      onload: ((event: ProgressEvent<FileReader>) => void) | null = null
+      result: string | ArrayBuffer | null = null
+
+      readAsDataURL() {
+        pendingReads.push(() => {
+          this.result = 'data:text/plain;base64,aGVsbG8='
+          this.onload?.(new ProgressEvent('load') as ProgressEvent<FileReader>)
+        })
+      }
+    }
+    const originalFileReader = globalThis.FileReader
+    Object.defineProperty(globalThis, 'FileReader', { configurable: true, value: DeferredFileReader })
+    try {
+      await renderAt('/mobile/chat/new')
+      const picker = container.querySelector('input[type="file"]') as HTMLInputElement
+      const first = new File(['first'], 'first.txt', { type: 'text/plain' })
+      const second = new File(['second'], 'second.txt', { type: 'text/plain' })
+      Object.defineProperty(picker, 'files', { configurable: true, value: [first, second] })
+      await act(async () => picker.dispatchEvent(new Event('change', { bubbles: true })))
+
+      const form = container.querySelector('form') as HTMLFormElement
+      await act(async () => {
+        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+        await vi.waitFor(() => expect(pendingReads).toHaveLength(1))
+        pendingReads[0]()
+        await vi.waitFor(() => expect(pendingReads).toHaveLength(2))
+      })
+      await act(async () => {
+        ;(container.querySelector('button[aria-label="Cancel first.txt"]') as HTMLButtonElement).click()
+        ;(container.querySelector('button[aria-label="Cancel second.txt"]') as HTMLButtonElement).click()
+        pendingReads[1]()
+        await Promise.resolve()
+      })
+
+      expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'session.create')).toHaveLength(0)
+      expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'file.attach')).toHaveLength(0)
+      expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(0)
+      expect(container.querySelectorAll('.mobile-bubble.is-user')).toHaveLength(0)
+    } finally {
+      Object.defineProperty(globalThis, 'FileReader', { configurable: true, value: originalFileReader })
+    }
   })
 
   it('preserves pending and newly selected attachments when an upload fails', async () => {

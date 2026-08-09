@@ -3035,6 +3035,47 @@ async def get_health():
     }
 
 
+def _serialize_codex_quota(snapshot: Any) -> Dict[str, Any]:
+    if snapshot is None:
+        return {
+            "available": False,
+            "details": [],
+            "fetched_at": None,
+            "plan": None,
+            "provider": "openai-codex",
+            "windows": [],
+        }
+    return {
+        "available": bool(snapshot.available),
+        "details": list(snapshot.details),
+        "fetched_at": snapshot.fetched_at.isoformat(),
+        "plan": snapshot.plan,
+        "provider": snapshot.provider,
+        "windows": [
+            {
+                "label": window.label,
+                "reset_at": window.reset_at.isoformat() if window.reset_at else None,
+                "used_percent": window.used_percent,
+            }
+            for window in snapshot.windows
+        ],
+    }
+
+
+@app.get("/api/mobile/codex-quota")
+async def get_mobile_codex_quota(request: Request, profile: Optional[str] = None):
+    """Return OAuth-backed Codex account limits without exposing credentials."""
+    _require_token(request)
+    from agent.account_usage import fetch_account_usage
+
+    with _config_profile_scope(profile):
+        snapshot = await run_in_threadpool(fetch_account_usage, "openai-codex")
+    return JSONResponse(
+        content=_serialize_codex_quota(snapshot),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None

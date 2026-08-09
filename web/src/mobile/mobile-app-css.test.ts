@@ -93,4 +93,52 @@ describe('mobile bottom navigation layout', () => {
     expect(sheetAction).toContain('min-height: 2.75rem')
     expect(sheetAction).toContain('width: 100%')
   })
+
+  it('keeps Codex quota readable and full-width when the provider returns one window', () => {
+    const singleWindow = styles.match(/\.mobile-codex-quota-window:only-child\s*\{([^}]*)\}/)?.[1] ?? ''
+    const refreshButton = styles.match(/\.mobile-codex-quota-icon,\s*\.mobile-codex-quota-heading button\s*\{([^}]*)\}/)?.[1] ?? ''
+
+    expect(singleWindow).toContain('grid-column: 1 / -1')
+    expect(refreshButton).toContain('height: 2.75rem')
+  })
+
+  it('keeps chat bubbles content-sized instead of stretching short messages across iPad', () => {
+    const bubble = styles.match(/\.mobile-bubble\s*\{([^}]*)\}/)?.[1] ?? ''
+
+    expect(bubble).toContain('width: fit-content')
+    expect(bubble).toContain('max-width: 90%')
+  })
+
+  it('applies synchronized viewport sizing and mobile tokens to direct chat routes', () => {
+    const route = styles.match(/\.mobile-chat-route\s*\{([^}]*)\}/)?.[1] ?? ''
+    const chatBlocks = [...styles.matchAll(/\.mobile-chat-shell\s*\{([^}]*)\}/g)].map(match => match[1])
+
+    expect(styles).toMatch(/\.mobile-app-shell,\s*\.mobile-chat-route,\s*\.mobile-chat-shell\s*\{/)
+    expect(route).toContain('height: var(--mobile-app-height, 100dvh)')
+    expect(chatBlocks.some(chat => chat.includes('height: var(--mobile-app-height, 100dvh)'))).toBe(true)
+  })
+
+  it('removes all mobile interaction transitions when reduced motion is requested', () => {
+    const reducedMotion = styles.match(/@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/)?.[1] ?? ''
+
+    expect(reducedMotion).toContain('.mobile-app-shell *')
+    expect(reducedMotion).toContain('.mobile-chat-route *')
+    expect(reducedMotion).toContain('transition: none !important')
+  })
+
+  it('adapts the mobile shell, lists, chat, and sheets for iPad viewports', () => {
+    const tablet = styles.match(/@media \(min-width: 48rem\) \{([\s\S]*?)\n\}/)?.[1] ?? ''
+
+    expect(tablet).toContain('width: min(100%, 64rem)')
+    expect(tablet).toContain('width: min(100%, 52rem)')
+    expect(tablet).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))')
+    expect(tablet).toContain('.mobile-home-screen')
+    expect(tablet).toContain('.mobile-session-list')
+    expect(tablet).toContain('.mobile-task-list')
+    expect(tablet).toContain('.mobile-notification-list')
+    expect(tablet).toContain('.mobile-sheet-backdrop')
+    expect(tablet).toContain('align-items: center')
+    expect(tablet).toContain('border-radius: 1.5rem')
+    expect(tablet).toContain('max-width: 72%')
+  })
 })

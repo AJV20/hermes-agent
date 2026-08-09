@@ -13,6 +13,14 @@ describe('PWA mobile shell', () => {
     expect(viewport).not.toContain('user-scalable')
   })
 
+  it('allows iPad installations to rotate between portrait and landscape', () => {
+    const manifest = JSON.parse(readFileSync(new URL('../public/manifest.webmanifest', import.meta.url), 'utf8')) as {
+      orientation?: string
+    }
+
+    expect(manifest.orientation).toBe('any')
+  })
+
   it('versions the service-worker URL from the current hashed app bundle', () => {
     expect(buildServiceWorkerUrl('', '/assets/index-CtC5HFVK.js')).toBe(
       '/sw.js?v=index-CtC5HFVK.js',

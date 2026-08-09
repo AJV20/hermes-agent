@@ -107,18 +107,33 @@ describe("api.getSessionMessages", () => {
   });
 });
 
+describe("api.getCodexQuota", () => {
+  it("requests Codex account limits within the selected profile", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ available: true, windows: [] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getCodexQuota("mabel");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/mobile/codex-quota?profile=mabel",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+});
+
 describe("api session management", () => {
   it("serializes archived session filtering and profile-scoped flag updates", async () => {
     vi.stubGlobal("window", {});
     const fetchMock = jsonFetchMock({ ok: true });
     vi.stubGlobal("fetch", fetchMock);
 
-    await api.getSessions(30, 0, { archived: true, order: "recent", profile: "mabel" });
+    await api.getSessions(30, 0, { archived: "only", order: "recent", profile: "mabel" });
     await api.updateSession("session-1", { pinned: true }, "mabel");
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "/api/sessions?limit=30&offset=0&order=recent&archived=true&profile=mabel",
+      "/api/sessions?limit=30&offset=0&order=recent&archived=only&profile=mabel",
       expect.objectContaining({ credentials: "include" }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(

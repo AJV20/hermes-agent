@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useLocation } from 'react-router'
 
 import { useProfileScope } from '@/contexts/useProfileScope'
 import { api, type CronJob, type SessionInfo, type StatusResponse } from '@/lib/api'
-import { ChatScreen } from './chat/ChatScreen'
+
 import { useMobileViewportSync, usePwaUpdateReady } from './mobile-hooks'
 import { PwaUpdateBanner } from './ui/PwaUpdateBanner'
 import { orderCronJobs, routeTab, safeDecodePathSegment } from './mobile-utils'
@@ -16,6 +16,8 @@ import type { LoadPhase, ScopedLoadState } from './types'
 import { BottomNavigation } from './ui/primitives'
 import './mobile-app.css'
 
+const ChatScreen = lazy(() => import('./chat/ChatScreen').then(module => ({ default: module.ChatScreen })))
+
 export function MobileApp() {
   useMobileViewportSync()
   const [updateReady, deferUpdate] = usePwaUpdateReady()
@@ -25,14 +27,21 @@ export function MobileApp() {
   const [sessionsTotal, setSessionsTotal] = useState(0)
   const [archivedSessions, setArchivedSessions] = useState(false)
   const [loadingMoreSessions, setLoadingMoreSessions] = useState(false)
+  const [sessionsPageError, setSessionsPageError] = useState(false)
   const [cronJobs, setCronJobs] = useState<CronJob[]>([])
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [statusLoad, setStatusLoad] = useState<ScopedLoadState>({ phase: 'loading', scope: null })
   const [sessionsLoad, setSessionsLoad] = useState<ScopedLoadState>({ phase: 'loading', scope: null })
   const [tasksLoad, setTasksLoad] = useState<ScopedLoadState>({ phase: 'loading', scope: null })
   const [sessionsRefreshKey, setSessionsRefreshKey] = useState(0)
+  const [chatUpdateBlocked, setChatUpdateBlocked] = useState(false)
   const selectedProfile = profile || currentProfile
   const sessionsScope = `${selectedProfile}\u0000${archivedSessions ? 'archived' : 'active'}`
+  const sessionsScopeRef = useRef(sessionsScope)
+
+  useEffect(() => {
+    sessionsScopeRef.current = sessionsScope
+  }, [sessionsScope])
 
   useEffect(() => {
     let cancelled = false
@@ -73,7 +82,7 @@ export function MobileApp() {
     const requestScope = sessionsScope
 
     void api.getSessions(30, 0, {
-      ...(archivedSessions ? { archived: true } : {}),
+      ...(archivedSessions ? { archived: 'only' as const } : {}),
       order: 'recent',
       profile
     }).then(
@@ -81,6 +90,7 @@ export function MobileApp() {
         if (cancelled) return
         setSessions(value.sessions)
         setSessionsTotal(value.total)
+        setSessionsPageError(false)
         setSessionsLoad({ phase: 'ready', scope: requestScope })
       },
       () => {
@@ -98,22 +108,27 @@ export function MobileApp() {
 
   const loadMoreSessions = useCallback(async () => {
     if (loadingMoreSessions || sessions.length >= sessionsTotal) return
+    const requestScope = sessionsScope
+    setSessionsPageError(false)
     setLoadingMoreSessions(true)
     try {
       const value = await api.getSessions(30, sessions.length, {
-        ...(archivedSessions ? { archived: true } : {}),
+        ...(archivedSessions ? { archived: 'only' as const } : {}),
         order: 'recent',
         profile
       })
+      if (sessionsScopeRef.current !== requestScope) return
       setSessions(current => {
         const existing = new Set(current.map(session => session.id))
         return [...current, ...value.sessions.filter(session => !existing.has(session.id))]
       })
       setSessionsTotal(value.total)
+    } catch {
+      if (sessionsScopeRef.current === requestScope) setSessionsPageError(true)
     } finally {
       setLoadingMoreSessions(false)
     }
-  }, [archivedSessions, loadingMoreSessions, profile, sessions.length, sessionsTotal])
+  }, [archivedSessions, loadingMoreSessions, profile, sessions.length, sessionsScope, sessionsTotal])
 
   const statusPhase: LoadPhase = statusLoad.scope === selectedProfile ? statusLoad.phase : 'loading'
   const sessionsPhase: LoadPhase = sessionsLoad.scope === sessionsScope ? sessionsLoad.phase : 'loading'
@@ -130,15 +145,18 @@ export function MobileApp() {
     const storedSessionId = safeDecodePathSegment(chatMatch[1])
     if (!storedSessionId) return <Navigate replace to="/mobile/chats" />
     return (
-      <>
-        <ChatScreen
-          key={`${profile}\u0000${storedSessionId}`}
-          onSessionCreated={() => setSessionsRefreshKey(current => current + 1)}
-          profile={profile}
-          storedSessionId={storedSessionId}
-        />
-        <PwaUpdateBanner onLater={deferUpdate} visible={updateReady} />
-      </>
+      <div className="mobile-chat-route">
+        <Suspense fallback={<div className="mobile-chat-shell"><div aria-busy="true" className="mobile-empty-card">Opening conversation…</div></div>}>
+          <ChatScreen
+            key={`${profile}\u0000${storedSessionId}`}
+            onSessionCreated={() => setSessionsRefreshKey(current => current + 1)}
+            onUpdateBlockedChange={setChatUpdateBlocked}
+            profile={profile}
+            storedSessionId={storedSessionId}
+          />
+        </Suspense>
+        <PwaUpdateBanner blocked={chatUpdateBlocked} onLater={deferUpdate} visible={updateReady} />
+      </div>
     )
   }
 
@@ -148,6 +166,7 @@ export function MobileApp() {
       {active === 'home' && (
         <HomeScreen
           cronJobs={orderedCronJobs}
+          profile={profile}
           sessions={visibleSessions}
           sessionsPhase={sessionsPhase}
           status={visibleStatus}
@@ -159,6 +178,7 @@ export function MobileApp() {
         <ChatsScreen
           archived={archivedSessions}
           canLoadMore={visibleSessions.length < sessionsTotal}
+          loadMoreError={sessionsPageError}
           loadingMore={loadingMoreSessions}
           onArchiveViewChange={setArchivedSessions}
           onLoadMore={() => void loadMoreSessions()}

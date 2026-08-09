@@ -5,6 +5,7 @@ import { api, type CronJob } from '@/lib/api'
 import type { LoadPhase } from '../types'
 import { formatJobRun } from '../mobile-utils'
 import { AppHeader, DesktopDocumentLink } from '../ui/primitives'
+import { MobileSheet } from '../ui/sheets'
 
 function taskFailureDetail(job: CronJob): string {
   return job.last_error || job.last_delivery_error || job.last_status || 'The latest run needs attention.'
@@ -151,14 +152,7 @@ export function TasksScreen({ jobs, phase, profile }: { jobs: CronJob[]; phase: 
         </div>
       </main>
       {runConfirm && (
-        <div className="mobile-sheet-backdrop" onClick={() => setRunConfirm(null)}>
-          <section
-            aria-label={`Confirm run ${runConfirm.name || 'Hermes task'}`}
-            aria-modal="true"
-            className="mobile-bottom-sheet"
-            onClick={event => event.stopPropagation()}
-            role="dialog"
-          >
+        <MobileSheet ariaLabel={`Confirm run ${runConfirm.name || 'Hermes task'}`} onClose={() => setRunConfirm(null)}>
             <div className="mobile-sheet-handle" />
             <h2>Run {runConfirm.name || 'Hermes task'} now?</h2>
             <p className="mobile-sheet-copy">This starts the task immediately and may send messages or change connected systems.</p>
@@ -172,24 +166,19 @@ export function TasksScreen({ jobs, phase, profile }: { jobs: CronJob[]; phase: 
               Run task now
             </button>
             <button className="mobile-sheet-cancel" onClick={() => setRunConfirm(null)} type="button">Cancel</button>
-          </section>
-        </div>
+        </MobileSheet>
       )}
       {selectedError && (
-        <div className="mobile-sheet-backdrop" onClick={() => setSelectedError(null)}>
-          <section
-            aria-label={`Task error details for ${selectedError.name || 'Hermes task'}`}
-            aria-modal="true"
-            className="mobile-bottom-sheet mobile-task-error-sheet"
-            onClick={event => event.stopPropagation()}
-            role="dialog"
-          >
+        <MobileSheet
+          ariaLabel={`Task error details for ${selectedError.name || 'Hermes task'}`}
+          className="mobile-task-error-sheet"
+          onClose={() => setSelectedError(null)}
+        >
             <div className="mobile-sheet-handle" />
             <h2>{selectedError.name || 'Hermes task'}</h2>
             <pre>{taskFailureDetail(selectedError)}</pre>
             <button className="mobile-sheet-cancel" onClick={() => setSelectedError(null)} type="button">Done</button>
-          </section>
-        </div>
+        </MobileSheet>
       )}
     </>
   )

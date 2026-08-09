@@ -5,9 +5,11 @@ import type { CronJob, SessionInfo, StatusResponse } from '@/lib/api'
 import type { LoadPhase } from '../types'
 import { activeSessionsLabel, formatJobRun, greetingForCurrentTime, relativeTime, sessionLabel } from '../mobile-utils'
 import { AppHeader, DesktopDocumentLink, QuickAction } from '../ui/primitives'
+import { CodexQuotaCard } from '../ui/CodexQuotaCard'
 
 export function HomeScreen({
   cronJobs,
+  profile,
   sessions,
   sessionsPhase,
   status,
@@ -15,6 +17,7 @@ export function HomeScreen({
   tasksPhase
 }: {
   cronJobs: CronJob[]
+  profile: string
   sessions: SessionInfo[]
   sessionsPhase: LoadPhase
   status: StatusResponse | null
@@ -59,6 +62,8 @@ export function HomeScreen({
             <strong>Desktop</strong>
           </DesktopDocumentLink>
         </section>
+
+        <CodexQuotaCard profile={profile} />
 
         {sessionsPhase === 'loading' && (
           <div className="mobile-empty-card" aria-busy="true">Loading recent conversations…</div>

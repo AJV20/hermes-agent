@@ -11,6 +11,14 @@ describe("mobile build budget wiring", () => {
     expect(main).not.toContain("import(entry)");
   });
 
+  it("lazy-loads the chat route so Home does not pay for the full composer and markdown graph", () => {
+    const mobileApp = readFileSync(join(process.cwd(), "src", "mobile", "MobileApp.tsx"), "utf8");
+
+    expect(mobileApp).toContain("lazy(() => import('./chat/ChatScreen')")
+    expect(mobileApp).not.toContain("import { ChatScreen } from './chat/ChatScreen'")
+    expect(mobileApp).toContain('<Suspense')
+  });
+
   it("emits a Vite manifest and exposes the verifier as an npm script", () => {
     const packageJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
       scripts: Record<string, string>;

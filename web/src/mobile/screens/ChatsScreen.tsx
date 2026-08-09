@@ -6,10 +6,12 @@ import { api, type SessionInfo } from '@/lib/api'
 import type { LoadPhase } from '../types'
 import { sessionLabel } from '../mobile-utils'
 import { AppHeader, SessionRow } from '../ui/primitives'
+import { MobileSheet } from '../ui/sheets'
 
 export function ChatsScreen({
   archived,
   canLoadMore,
+  loadMoreError,
   loadingMore,
   onArchiveViewChange,
   onLoadMore,
@@ -20,6 +22,7 @@ export function ChatsScreen({
 }: {
   archived: boolean
   canLoadMore: boolean
+  loadMoreError: boolean
   loadingMore: boolean
   onArchiveViewChange: (archived: boolean) => void
   onLoadMore: () => void
@@ -206,6 +209,9 @@ export function ChatsScreen({
           {phase === 'ready' && !visibleSessions.length && (
             <div className="mobile-empty-card">{results ? 'No matching conversations.' : 'No conversations yet.'}</div>
           )}
+          {!results && phase === 'ready' && loadMoreError && (
+            <div className="mobile-empty-card" role="alert">Could not load more conversations.</div>
+          )}
           {!results && phase === 'ready' && canLoadMore && (
             <button
               aria-label="Load more conversations"
@@ -214,20 +220,13 @@ export function ChatsScreen({
               onClick={onLoadMore}
               type="button"
             >
-              {loadingMore ? 'Loading more…' : 'Load more'}
+              {loadingMore ? 'Loading more…' : loadMoreError ? 'Try loading more' : 'Load more'}
             </button>
           )}
         </div>
       </main>
       {selected && (
-        <div className="mobile-sheet-backdrop" onClick={() => setSelected(null)}>
-          <section
-            aria-label={`Conversation actions for ${sessionLabel(selected)}`}
-            aria-modal="true"
-            className="mobile-bottom-sheet"
-            onClick={event => event.stopPropagation()}
-            role="dialog"
-          >
+        <MobileSheet ariaLabel={`Conversation actions for ${sessionLabel(selected)}`} onClose={() => setSelected(null)}>
             <div className="mobile-sheet-handle" />
             <h2>Conversation</h2>
             <form onSubmit={rename}>
@@ -276,8 +275,7 @@ export function ChatsScreen({
               </div>
             )}
             <button className="mobile-sheet-cancel" disabled={working} onClick={() => setSelected(null)} type="button">Cancel</button>
-          </section>
-        </div>
+        </MobileSheet>
       )}
     </>
   )

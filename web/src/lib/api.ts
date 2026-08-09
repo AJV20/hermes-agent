@@ -301,7 +301,7 @@ function appendQueryParam(url: string, key: string, value?: string): string {
 }
 
 export interface SessionQueryOptions {
-  archived?: boolean;
+  archived?: "exclude" | "only" | "include";
   profile?: string;
   order?: "created" | "recent";
   source?: string | null;
@@ -334,7 +334,7 @@ function appendSessionFilters(url: string, options: SessionQueryOptions): string
   next = appendQueryParam(
     next,
     "archived",
-    typeof options.archived === "boolean" ? String(options.archived) : undefined,
+    options.archived,
   );
   next = appendQueryParam(next, "source", options.source ?? undefined);
   if (options.sources && options.sources.length > 0) {
@@ -349,6 +349,8 @@ function appendSessionFilters(url: string, options: SessionQueryOptions): string
 export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getCodexQuota: (profile = "") =>
+    fetchJSON<CodexQuotaResponse>(appendProfileParam("/api/mobile/codex-quota", profile)),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
@@ -1890,6 +1892,21 @@ export interface PlatformStatus {
   error_message?: string;
   state: string;
   updated_at: string;
+}
+
+export interface CodexQuotaWindow {
+  label: string;
+  reset_at: string | null;
+  used_percent: number | null;
+}
+
+export interface CodexQuotaResponse {
+  available: boolean;
+  details: string[];
+  fetched_at: string | null;
+  plan: string | null;
+  provider: "openai-codex";
+  windows: CodexQuotaWindow[];
 }
 
 export interface StatusResponse {

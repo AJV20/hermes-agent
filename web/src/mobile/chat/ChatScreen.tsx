@@ -33,10 +33,12 @@ const MAX_MOBILE_IMAGE_BYTES = 25 * 1024 * 1024
 
 export function ChatScreen({
   onSessionCreated,
+  onUpdateBlockedChange,
   profile,
   storedSessionId
 }: {
   onSessionCreated: () => void
+  onUpdateBlockedChange: (blocked: boolean) => void
   profile: string
   storedSessionId: string
 }) {
@@ -79,6 +81,12 @@ export function ChatScreen({
   useEffect(() => {
     attachmentRef.current = attachments
   }, [attachments])
+
+  useEffect(() => {
+    onUpdateBlockedChange(Boolean(draft.trim() || attachments.length || chat.busy || voiceActive))
+  }, [attachments.length, chat.busy, draft, onUpdateBlockedChange, voiceActive])
+
+  useEffect(() => () => onUpdateBlockedChange(false), [onUpdateBlockedChange])
 
   useEffect(() => () => {
     attachmentRef.current.forEach(revokeAttachmentPreview)
@@ -309,7 +317,45 @@ export function ChatScreen({
           }
         ]
       }))
+      const dropCanceledSubmission = () => {
+        const pendingIds = new Set(pendingAttachments.map(attachment => attachment.id))
+        submitInFlight.current = false
+        setAttachments(current => {
+          const removed = current.filter(attachment => pendingIds.has(attachment.id))
+          removed.forEach(revokeAttachmentPreview)
+          return current.filter(attachment => !pendingIds.has(attachment.id))
+        })
+        pendingAttachments.forEach(attachment => canceledAttachmentIds.current.delete(attachment.id))
+        setChat(current => ({
+          ...current,
+          busy: false,
+          messages: current.messages.filter(message => message.id !== optimisticId)
+        }))
+      }
       try {
+        const preparedAttachments: Array<{ attachment: MobileAttachment; dataUrl: string }> = []
+        for (const attachment of pendingAttachments) {
+          if (canceledAttachmentIds.current.has(attachment.id)) continue
+          setAttachments(current => current.map(item => item.id === attachment.id ? { ...item, status: 'reading' } : item))
+          const dataUrl = await readFileAsDataUrl(attachment.file)
+          if (!canceledAttachmentIds.current.has(attachment.id)) {
+            preparedAttachments.push({ attachment, dataUrl })
+          }
+        }
+        const sendableAttachments = preparedAttachments.filter(
+          ({ attachment }) => !canceledAttachmentIds.current.has(attachment.id)
+        )
+        if (!text && !sendableAttachments.length) {
+          dropCanceledSubmission()
+          return
+        }
+
+        const sendableIds = new Set(sendableAttachments.map(({ attachment }) => attachment.id))
+        setAttachments(current => current.map(attachment => sendableIds.has(attachment.id)
+          ? { ...attachment, status: 'uploading' }
+          : attachment
+        ))
+
         let sid = runtimeId.current
         if (!sid) {
           const created = await gateway.request<{ session_id: string; stored_session_id?: string | null }>(
@@ -326,12 +372,9 @@ export function ChatScreen({
           pendingStoredId.current = created.stored_session_id || sid
         }
         const fileRefs: string[] = []
-        for (const attachment of pendingAttachments) {
+        let attachedCount = 0
+        for (const { attachment, dataUrl } of sendableAttachments) {
           if (canceledAttachmentIds.current.has(attachment.id)) continue
-          setAttachments(current => current.map(item => item.id === attachment.id ? { ...item, status: 'reading' } : item))
-          const dataUrl = await readFileAsDataUrl(attachment.file)
-          if (canceledAttachmentIds.current.has(attachment.id)) continue
-          setAttachments(current => current.map(item => item.id === attachment.id ? { ...item, status: 'uploading' } : item))
           if (attachment.file.type.startsWith('image/')) {
             const attached = await gateway.request<{ attached?: boolean; message?: string }>('image.attach_bytes', {
               content_base64: dataUrl.slice(dataUrl.indexOf(',') + 1),
@@ -339,6 +382,7 @@ export function ChatScreen({
               session_id: sid
             })
             if (!attached.attached) throw new Error(attached.message || `Could not attach ${attachment.file.name}`)
+            attachedCount += 1
           } else {
             const attached = await gateway.request<{ attached?: boolean; message?: string; ref_text?: string }>(
               'file.attach',
@@ -351,12 +395,17 @@ export function ChatScreen({
             if (!attached.attached || !attached.ref_text) {
               throw new Error(attached.message || `Could not attach ${attachment.file.name}`)
             }
-            if (!canceledAttachmentIds.current.has(attachment.id)) fileRefs.push(attached.ref_text)
+            fileRefs.push(attached.ref_text)
+            attachedCount += 1
           }
           setAttachments(current => current.map(item => item.id === attachment.id
-            ? { ...item, status: canceledAttachmentIds.current.has(attachment.id) ? 'canceled' : 'staged' }
+            ? { ...item, status: 'staged' }
             : item
           ))
+        }
+        if (!text && attachedCount === 0) {
+          dropCanceledSubmission()
+          return
         }
         const promptText = [...fileRefs, text].filter(Boolean).join('\n\n')
         await gateway.request('prompt.submit', { session_id: sid, text: promptText }, PROMPT_TIMEOUT_MS)
