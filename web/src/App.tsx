@@ -72,6 +72,7 @@ import { ProfileProvider } from "@/contexts/ProfileProvider";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
+import { MobileApp } from "@/mobile/MobileApp";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
 // Route pages are lazy-loaded so the initial dashboard shell does not pay for
@@ -368,7 +369,7 @@ function buildRoutes(
 
 const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
 
-export default function App() {
+function DashboardApp() {
   const { t } = useI18n();
   const { pathname } = useLocation();
   const { manifests, loading: pluginsLoading } = usePlugins();
@@ -820,6 +821,20 @@ export default function App() {
     </div>
     </ProfileProvider>
   );
+}
+
+export default function App() {
+  const { pathname } = useLocation();
+
+  if (pathname === "/mobile" || pathname.startsWith("/mobile/")) {
+    return (
+      <ProfileProvider>
+        <MobileApp />
+      </ProfileProvider>
+    );
+  }
+
+  return <DashboardApp />;
 }
 
 /**

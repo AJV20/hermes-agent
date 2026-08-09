@@ -3,7 +3,7 @@
   "short_name": "Hermes",
   "description": "Mobile Home Screen access to the Hermes Agent dashboard and chat.",
   "id": ".",
-  "start_url": ".",
+  "start_url": "./mobile",
   "scope": ".",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone", "browser"],

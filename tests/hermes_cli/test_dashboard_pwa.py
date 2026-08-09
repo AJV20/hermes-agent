@@ -1,9 +1,18 @@
+import json
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
+
+
+def test_pwa_launches_into_the_mobile_companion():
+    manifest_path = Path(__file__).parents[2] / "web" / "public" / "manifest.webmanifest"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["start_url"] == "./mobile"
+    assert manifest["scope"] == "."
 
 
 def _build_dist(root: Path) -> None:
