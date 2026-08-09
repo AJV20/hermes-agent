@@ -523,6 +523,7 @@ function ChatScreen({
 
   useEffect(() => {
     let cancelled = false
+    historyHydratedRef.current = false
     let reconnectAttempt = 0
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 

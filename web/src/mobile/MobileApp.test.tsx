@@ -8,11 +8,14 @@ const apiMocks = vi.hoisted(() => ({
   getCronJobs: vi.fn(async () => [
     { id: 'daily', enabled: true, name: 'Morning briefing', next_run_at: '2026-08-09T11:00:00Z' }
   ]),
-  getSessionMessages: vi.fn(async (): Promise<{
+  getSessionMessages: vi.fn(async (_sessionId?: string): Promise<{
     messages: never[]
     pagination?: { limit: number; offset: number; order: 'latest' | 'oldest'; returned: number }
     session_id: string
-  }> => ({ messages: [], session_id: 'session-1' })),
+  }> => {
+    void _sessionId
+    return { messages: [], session_id: 'session-1' }
+  }),
   getSessions: vi.fn(async () => ({
     limit: 20,
     offset: 0,
@@ -818,6 +821,34 @@ describe('MobileApp', () => {
       'session.resume',
       expect.objectContaining({ session_id: 'session-1' })
     )
+  })
+
+  it('loads the routed session history when switching between existing chats', async () => {
+    apiMocks.getSessionMessages.mockImplementation(async (sessionId = '') => ({
+      messages: [
+        {
+          id: sessionId === 'session-a' ? 101 : 202,
+          role: 'user',
+          content: sessionId === 'session-a' ? 'History from A' : 'History from B',
+          timestamp: 1
+        } as never
+      ],
+      session_id: sessionId
+    }))
+
+    await renderAt('/mobile/chat/session-a')
+    expect(container.textContent).toContain('History from A')
+
+    await act(async () => {
+      const routeSwitch = container.querySelector('[data-testid="switch-to-session-b"]') as HTMLAnchorElement
+      routeSwitch.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(apiMocks.getSessionMessages).toHaveBeenCalledWith('session-b', ''))
+    await vi.waitFor(() => expect(container.textContent).toContain('History from B'))
+
+    expect(apiMocks.getSessionMessages).toHaveBeenCalledWith('session-b', '')
+    expect(container.textContent).not.toContain('History from A')
   })
 
   it('cannot submit to the previous runtime while switching sessions', async () => {
