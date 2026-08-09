@@ -642,6 +642,7 @@ function TasksScreen({ jobs, phase, profile }: { jobs: CronJob[]; phase: LoadPha
   const [working, setWorking] = useState<string | null>(null)
   const [filter, setFilter] = useState<'active' | 'all' | 'attention' | 'paused' | null>(null)
   const [selectedError, setSelectedError] = useState<CronJob | null>(null)
+  const [runConfirm, setRunConfirm] = useState<CronJob | null>(null)
   const [mutationError, setMutationError] = useState<string | null>(null)
   const visibleJobs = jobs.map(job => ({ ...job, ...(updates[job.id] ?? {}) }))
   const attentionJobs = visibleJobs.filter(job => (
@@ -740,7 +741,7 @@ function TasksScreen({ jobs, phase, profile }: { jobs: CronJob[]; phase: LoadPha
                 <button
                   aria-label={`Run ${job.name || 'Hermes task'} now`}
                   disabled={working !== null}
-                  onClick={() => void updateJob(job, 'run')}
+                  onClick={() => setRunConfirm(job)}
                   type="button"
                 >
                   <Play /> Run
@@ -771,6 +772,31 @@ function TasksScreen({ jobs, phase, profile }: { jobs: CronJob[]; phase: LoadPha
           </DesktopDocumentLink>
         </div>
       </main>
+      {runConfirm && (
+        <div className="mobile-sheet-backdrop" onClick={() => setRunConfirm(null)}>
+          <section
+            aria-label={`Confirm run ${runConfirm.name || 'Hermes task'}`}
+            aria-modal="true"
+            className="mobile-bottom-sheet"
+            onClick={event => event.stopPropagation()}
+            role="dialog"
+          >
+            <div className="mobile-sheet-handle" />
+            <h2>Run {runConfirm.name || 'Hermes task'} now?</h2>
+            <p className="mobile-sheet-copy">This starts the task immediately and may send messages or change connected systems.</p>
+            <button
+              aria-label={`Confirm run ${runConfirm.name || 'Hermes task'}`}
+              className="mobile-primary-button"
+              disabled={working !== null}
+              onClick={() => void updateJob(runConfirm, 'run').then(() => setRunConfirm(null))}
+              type="button"
+            >
+              Run task now
+            </button>
+            <button className="mobile-sheet-cancel" onClick={() => setRunConfirm(null)} type="button">Cancel</button>
+          </section>
+        </div>
+      )}
       {selectedError && (
         <div className="mobile-sheet-backdrop" onClick={() => setSelectedError(null)}>
           <section

@@ -304,6 +304,13 @@ describe('MobileApp', () => {
       run.click()
       await Promise.resolve()
     })
+    expect(apiMocks.triggerCronJob).not.toHaveBeenCalled()
+    const confirmRun = container.querySelector('button[aria-label="Confirm run Morning briefing"]') as HTMLButtonElement
+    expect(confirmRun).not.toBeNull()
+    await act(async () => {
+      confirmRun.click()
+      await Promise.resolve()
+    })
     expect(apiMocks.triggerCronJob).toHaveBeenCalledWith('daily', 'default')
     expect(container.textContent).toContain('Running')
 

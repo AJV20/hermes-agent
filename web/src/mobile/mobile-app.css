@@ -877,6 +877,12 @@
   color: #ffb6b6;
   font-size: 0.7rem;
 }
+.mobile-sheet-copy {
+  margin: 0 0 0.9rem;
+  color: var(--mobile-muted);
+  font-size: 0.74rem;
+  line-height: 1.5;
+}
 .mobile-task-advanced-link {
   margin-top: 0.8rem;
 }
