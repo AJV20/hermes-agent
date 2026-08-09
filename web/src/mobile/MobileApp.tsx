@@ -40,6 +40,13 @@ const EMPTY_CHAT: MobileChatState = {
 }
 const PROMPT_TIMEOUT_MS = 1_800_000
 
+type LoadPhase = 'error' | 'loading' | 'ready'
+
+interface ScopedLoadState {
+  phase: LoadPhase
+  scope: string | null
+}
+
 function routeTab(pathname: string): 'chats' | 'home' | 'more' | 'tasks' {
   if (pathname.startsWith('/mobile/chat')) return 'chats'
   if (pathname.startsWith('/mobile/chats')) return 'chats'
@@ -57,6 +64,42 @@ function relativeTime(timestamp: number | null | undefined): string {
   const hours = Math.round(minutes / 60)
   if (hours < 24) return `${hours}h ago`
   return `${Math.round(hours / 24)}d ago`
+}
+
+function greetingForCurrentTime(now = new Date()): string {
+  const hour = now.getHours()
+  if (hour < 12) return 'Good morning.'
+  if (hour < 18) return 'Good afternoon.'
+  return 'Good evening.'
+}
+
+function activeSessionsLabel(count: number | null | undefined): string {
+  if (!count) return 'Hermes is ready.'
+  return `${count} session${count === 1 ? '' : 's'} active.`
+}
+
+function jobRunTimestamp(job: CronJob): number {
+  if (!job.next_run_at) return Number.POSITIVE_INFINITY
+  const timestamp = Date.parse(String(job.next_run_at))
+  return Number.isFinite(timestamp) ? timestamp : Number.POSITIVE_INFINITY
+}
+
+function orderCronJobs(jobs: CronJob[]): CronJob[] {
+  return [...jobs].sort((left, right) => {
+    if (left.enabled !== right.enabled) return left.enabled ? -1 : 1
+    return jobRunTimestamp(left) - jobRunTimestamp(right)
+  })
+}
+
+function formatJobRun(job: CronJob): string {
+  const timestamp = jobRunTimestamp(job)
+  if (Number.isFinite(timestamp)) {
+    const run = new Date(timestamp)
+    const date = run.toLocaleDateString('en-US', { day: 'numeric', month: 'short' })
+    const time = run.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+    return `${date} at ${time}`
+  }
+  return job.schedule_display || job.last_status || 'Scheduled'
 }
 
 function sessionLabel(session: SessionInfo): string {
@@ -150,7 +193,12 @@ function BottomNavigation({ active }: { active: ReturnType<typeof routeTab> }) {
       {items.map(item => {
         const Icon = item.icon
         return (
-          <Link className={active === item.tab ? 'is-active' : ''} key={item.path} to={item.path}>
+          <Link
+            aria-current={active === item.tab ? 'page' : undefined}
+            className={active === item.tab ? 'is-active' : ''}
+            key={item.path}
+            to={item.path}
+          >
             <Icon aria-hidden="true" />
             <span>{item.label}</span>
           </Link>
@@ -190,11 +238,17 @@ function SessionRow({ session }: { session: SessionInfo }) {
 function HomeScreen({
   cronJobs,
   sessions,
-  status
+  sessionsPhase,
+  status,
+  statusPhase,
+  tasksPhase
 }: {
   cronJobs: CronJob[]
   sessions: SessionInfo[]
+  sessionsPhase: LoadPhase
   status: StatusResponse | null
+  statusPhase: LoadPhase
+  tasksPhase: LoadPhase
 }) {
   const navigate = useNavigate()
   const nextJob = cronJobs.find(job => job.enabled)
@@ -202,12 +256,24 @@ function HomeScreen({
   const connected = Boolean(status?.gateway_running || status?.gateway_state === 'running')
   return (
     <>
-      <AppHeader detail={connected ? 'Connected to Desktop' : 'Desktop unavailable'} />
+      <AppHeader detail={
+        statusPhase === 'loading'
+          ? 'Connecting to Desktop'
+          : statusPhase === 'error'
+            ? 'Desktop status unavailable'
+            : connected ? 'Connected to Desktop' : 'Desktop unavailable'
+      } />
       <main className="mobile-screen mobile-home-screen">
         <section className="mobile-hero">
           <p className="mobile-eyebrow">Your agent, wherever you are</p>
-          <h1>Good evening.</h1>
-          <p>{status?.active_sessions ? `${status.active_sessions} session active.` : 'Hermes is ready.'}</p>
+          <h1>{greetingForCurrentTime()}</h1>
+          <p>
+            {statusPhase === 'loading'
+              ? 'Loading Hermes status…'
+              : statusPhase === 'error'
+                ? 'Could not reach Hermes Desktop.'
+                : activeSessionsLabel(status?.active_sessions)}
+          </p>
         </section>
 
         <section className="mobile-quick-grid" aria-label="Quick actions">
@@ -217,7 +283,13 @@ function HomeScreen({
           <QuickAction icon={<Wifi />} label="Desktop" to="/system" />
         </section>
 
-        {recent && (
+        {sessionsPhase === 'loading' && (
+          <div className="mobile-empty-card" aria-busy="true">Loading recent conversations…</div>
+        )}
+        {sessionsPhase === 'error' && (
+          <div className="mobile-empty-card" role="alert">Could not load recent conversations.</div>
+        )}
+        {sessionsPhase === 'ready' && recent && (
           <section>
             <div className="mobile-section-heading">
               <h2>Continue</h2>
@@ -244,14 +316,18 @@ function HomeScreen({
             <h2>Next task</h2>
             <Link to="/mobile/tasks">Manage</Link>
           </div>
-          {nextJob ? (
+          {tasksPhase === 'loading' ? (
+            <div className="mobile-empty-card" aria-busy="true">Loading scheduled tasks…</div>
+          ) : tasksPhase === 'error' ? (
+            <div className="mobile-empty-card" role="alert">Could not load scheduled tasks.</div>
+          ) : nextJob ? (
             <article className="mobile-task-card">
               <span className="mobile-task-icon">
                 <Clock3 />
               </span>
               <span>
                 <strong>{nextJob.name || 'Scheduled Hermes task'}</strong>
-                <small>{nextJob.schedule_display || nextJob.next_run_at || 'Scheduled'}</small>
+                <small>{formatJobRun(nextJob)}</small>
               </span>
               <span className="mobile-status-pill">Enabled</span>
             </article>
@@ -269,10 +345,16 @@ function HomeScreen({
   )
 }
 
-function ChatsScreen({ sessions }: { sessions: SessionInfo[] }) {
+function ChatsScreen({ phase, sessions }: { phase: LoadPhase; sessions: SessionInfo[] }) {
   return (
     <>
-      <AppHeader detail={`${sessions.length} recent conversations`} />
+      <AppHeader detail={
+        phase === 'loading'
+          ? 'Loading conversations'
+          : phase === 'error'
+            ? 'Conversations unavailable'
+            : `${sessions.length} recent conversations`
+      } />
       <main className="mobile-screen">
         <div className="mobile-page-heading">
           <div>
@@ -284,17 +366,19 @@ function ChatsScreen({ sessions }: { sessions: SessionInfo[] }) {
           </Link>
         </div>
         <div className="mobile-session-list">
-          {sessions.map(session => (
+          {phase === 'ready' && sessions.map(session => (
             <SessionRow key={session.id} session={session} />
           ))}
-          {!sessions.length && <div className="mobile-empty-card">No conversations yet.</div>}
+          {phase === 'loading' && <div className="mobile-empty-card" aria-busy="true">Loading conversations…</div>}
+          {phase === 'error' && <div className="mobile-empty-card" role="alert">Could not load conversations.</div>}
+          {phase === 'ready' && !sessions.length && <div className="mobile-empty-card">No conversations yet.</div>}
         </div>
       </main>
     </>
   )
 }
 
-function TasksScreen({ jobs }: { jobs: CronJob[] }) {
+function TasksScreen({ jobs, phase }: { jobs: CronJob[]; phase: LoadPhase }) {
   return (
     <>
       <AppHeader detail="Automations and schedules" />
@@ -306,19 +390,21 @@ function TasksScreen({ jobs }: { jobs: CronJob[] }) {
           </div>
         </div>
         <div className="mobile-task-list">
-          {jobs.map(job => (
+          {phase === 'ready' && jobs.map(job => (
             <Link className="mobile-task-card" key={job.id} to="/cron">
               <span className="mobile-task-icon">{job.last_status === 'success' ? <CheckCircle2 /> : <Clock3 />}</span>
               <span>
                 <strong>{job.name || 'Hermes task'}</strong>
-                <small>{job.next_run_at || job.schedule_display || job.last_status || 'Scheduled'}</small>
+                <small>{formatJobRun(job)}</small>
               </span>
               <span className={`mobile-status-pill ${job.enabled ? '' : 'is-muted'}`}>
                 {job.enabled ? 'Enabled' : 'Paused'}
               </span>
             </Link>
           ))}
-          {!jobs.length && <div className="mobile-empty-card">No scheduled tasks.</div>}
+          {phase === 'loading' && <div className="mobile-empty-card" aria-busy="true">Loading scheduled tasks…</div>}
+          {phase === 'error' && <div className="mobile-empty-card" role="alert">Could not load scheduled tasks.</div>}
+          {phase === 'ready' && !jobs.length && <div className="mobile-empty-card">No scheduled tasks.</div>}
         </div>
       </main>
     </>
@@ -381,7 +467,7 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
   const [chat, setChat] = useState<MobileChatState>(EMPTY_CHAT)
   const [draft, setDraft] = useState('')
   const [connected, setConnected] = useState(false)
-  const [ready, setReady] = useState(isNew)
+  const [ready, setReady] = useState(false)
   const threadRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -392,15 +478,26 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
         if (event.type === 'message.complete' || event.type === 'error') submitInFlight.current = false
         setChat(current => applyMobileGatewayEvent(current, event))
       }),
-      gateway.onState(state => setConnected(state === 'open'))
+      gateway.onState(state => {
+        const isOpen = state === 'open'
+        setConnected(isOpen)
+        if (!isOpen) setReady(false)
+      })
     ]
 
     void gateway
       .connect()
       .then(async () => {
-        if (cancelled || isNew) return
-        const [stored, resumed] = await Promise.all([
-          api.getSessionMessages(storedSessionId, profile).catch(() => ({ messages: [], session_id: storedSessionId })),
+        if (cancelled) return
+        if (isNew) {
+          setReady(true)
+          return
+        }
+        const [storedResult, resumed] = await Promise.all([
+          api.getSessionMessages(storedSessionId, profile).then(
+            stored => ({ ok: true as const, stored }),
+            () => ({ ok: false as const })
+          ),
           gateway.request<{ session_id: string }>('session.resume', {
             cols: 48,
             ...(profile ? { profile } : {}),
@@ -411,7 +508,11 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
         if (cancelled) return
         runtimeId.current = resumed.session_id
         setReady(true)
-        setChat(current => ({ ...current, messages: projectSessionMessages(stored.messages) }))
+        setChat(current => ({
+          ...current,
+          error: storedResult.ok ? current.error : 'Could not load conversation history.',
+          messages: storedResult.ok ? projectSessionMessages(storedResult.stored.messages) : current.messages
+        }))
       })
       .catch((error: Error) => {
         if (!cancelled) {
@@ -437,6 +538,7 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
       event.preventDefault()
       const text = draft.trim()
       if (!ready || !text || chat.busy || submitInFlight.current) return
+      const optimisticId = `user-${Date.now()}`
       submitInFlight.current = true
       setDraft('')
       setChat(current => ({
@@ -447,7 +549,7 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
           ...current.messages,
           {
             content: text,
-            id: `user-${Date.now()}`,
+            id: optimisticId,
             role: 'user'
           }
         ]
@@ -477,10 +579,12 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
         }
       } catch (error) {
         submitInFlight.current = false
+        setDraft(current => current.trim() ? current : text)
         setChat(current => ({
           ...current,
           busy: false,
-          error: error instanceof Error ? error.message : 'Could not send message'
+          error: error instanceof Error ? error.message : 'Could not send message',
+          messages: current.messages.filter(message => message.id !== optimisticId)
         }))
       }
     },
@@ -528,7 +632,7 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
           aria-label="Message Hermes"
           disabled={!ready}
           onChange={event => setDraft(event.target.value)}
-          placeholder={ready ? 'Message Hermes…' : 'Resuming conversation…'}
+          placeholder={ready ? 'Message Hermes…' : isNew ? 'Connecting to Hermes…' : 'Resuming conversation…'}
           rows={1}
           value={draft}
         />
@@ -548,28 +652,70 @@ function ChatScreen({ profile, storedSessionId }: { profile: string; storedSessi
 export function MobileApp() {
   useMobileViewportSync()
   const { pathname } = useLocation()
-  const { profile } = useProfileScope()
+  const { currentProfile, profile } = useProfileScope()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [cronJobs, setCronJobs] = useState<CronJob[]>([])
   const [status, setStatus] = useState<StatusResponse | null>(null)
+  const [statusLoad, setStatusLoad] = useState<ScopedLoadState>({ phase: 'loading', scope: null })
+  const [sessionsLoad, setSessionsLoad] = useState<ScopedLoadState>({ phase: 'loading', scope: null })
+  const [tasksLoad, setTasksLoad] = useState<ScopedLoadState>({ phase: 'loading', scope: null })
+  const selectedProfile = profile || currentProfile
 
   useEffect(() => {
     let cancelled = false
-    void Promise.allSettled([
-      api.getStatus(),
-      api.getSessions(30, 0, { order: 'recent', profile }),
-      api.getCronJobs('all')
-    ]).then(results => {
-      if (cancelled) return
-      const [statusResult, sessionsResult, cronResult] = results
-      if (statusResult?.status === 'fulfilled') setStatus(statusResult.value)
-      if (sessionsResult?.status === 'fulfilled') setSessions(sessionsResult.value.sessions)
-      if (cronResult?.status === 'fulfilled') setCronJobs(cronResult.value)
-    })
+    const requestScope = selectedProfile
+
+    void api.getStatus().then(
+      value => {
+        if (cancelled) return
+        setStatus(value)
+        setStatusLoad({ phase: 'ready', scope: requestScope })
+      },
+      () => {
+        if (cancelled) return
+        setStatus(null)
+        setStatusLoad({ phase: 'error', scope: requestScope })
+      }
+    )
+    void api.getSessions(30, 0, { order: 'recent', profile }).then(
+      value => {
+        if (cancelled) return
+        setSessions(value.sessions)
+        setSessionsLoad({ phase: 'ready', scope: requestScope })
+      },
+      () => {
+        if (cancelled) return
+        setSessions([])
+        setSessionsLoad({ phase: 'error', scope: requestScope })
+      }
+    )
+    void api.getCronJobs(requestScope).then(
+      value => {
+        if (cancelled) return
+        setCronJobs(value)
+        setTasksLoad({ phase: 'ready', scope: requestScope })
+      },
+      () => {
+        if (cancelled) return
+        setCronJobs([])
+        setTasksLoad({ phase: 'error', scope: requestScope })
+      }
+    )
+
     return () => {
       cancelled = true
     }
-  }, [profile])
+  }, [profile, selectedProfile])
+
+  const statusPhase: LoadPhase = statusLoad.scope === selectedProfile ? statusLoad.phase : 'loading'
+  const sessionsPhase: LoadPhase = sessionsLoad.scope === selectedProfile ? sessionsLoad.phase : 'loading'
+  const tasksPhase: LoadPhase = tasksLoad.scope === selectedProfile ? tasksLoad.phase : 'loading'
+  const visibleStatus = statusLoad.scope === selectedProfile ? status : null
+  const visibleSessions = sessionsLoad.scope === selectedProfile ? sessions : []
+  const orderedCronJobs = useMemo(
+    () => orderCronJobs(tasksLoad.scope === selectedProfile ? cronJobs : []),
+    [cronJobs, selectedProfile, tasksLoad.scope]
+  )
 
   const chatMatch = pathname.match(/^\/mobile\/chat\/([^/]+)\/?$/)
   if (chatMatch?.[1]) {
@@ -581,9 +727,18 @@ export function MobileApp() {
   const active = routeTab(pathname)
   return (
     <div className="mobile-app-shell">
-      {active === 'home' && <HomeScreen cronJobs={cronJobs} sessions={sessions} status={status} />}
-      {active === 'chats' && <ChatsScreen sessions={sessions} />}
-      {active === 'tasks' && <TasksScreen jobs={cronJobs} />}
+      {active === 'home' && (
+        <HomeScreen
+          cronJobs={orderedCronJobs}
+          sessions={visibleSessions}
+          sessionsPhase={sessionsPhase}
+          status={visibleStatus}
+          statusPhase={statusPhase}
+          tasksPhase={tasksPhase}
+        />
+      )}
+      {active === 'chats' && <ChatsScreen phase={sessionsPhase} sessions={visibleSessions} />}
+      {active === 'tasks' && <TasksScreen jobs={orderedCronJobs} phase={tasksPhase} />}
       {active === 'more' && <MoreScreen />}
       <BottomNavigation active={active} />
     </div>

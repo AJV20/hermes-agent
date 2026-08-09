@@ -39,23 +39,28 @@ const apiMocks = vi.hoisted(() => ({
   }))
 }))
 
-const gatewayMocks = vi.hoisted(() => ({ request: vi.fn() }))
-const profileMocks = vi.hoisted(() => ({ profile: '' }))
+const gatewayMocks = vi.hoisted(() => ({
+  connect: vi.fn(),
+  request: vi.fn(),
+  stateHandler: null as ((state: string) => void) | null
+}))
+const profileMocks = vi.hoisted(() => ({ currentProfile: 'default', profile: '' }))
 
 vi.mock('@/lib/api', () => ({ api: apiMocks }))
 vi.mock('@/contexts/useProfileScope', () => ({
-  useProfileScope: () => ({ profile: profileMocks.profile })
+  useProfileScope: () => ({ currentProfile: profileMocks.currentProfile, profile: profileMocks.profile })
 }))
 vi.mock('@/lib/gatewayClient', () => ({
   GatewayClient: class {
     close() {}
     connect() {
-      return Promise.resolve()
+      return gatewayMocks.connect()
     }
     onAny() {
       return () => {}
     }
-    onState() {
+    onState(handler: (state: string) => void) {
+      gatewayMocks.stateHandler = handler
       return () => {}
     }
     request(method: string, params?: unknown) {
@@ -90,7 +95,10 @@ beforeEach(() => {
     if (method === 'session.resume') return { session_id: 'runtime-resumed' }
     return {}
   })
+  gatewayMocks.connect.mockResolvedValue(undefined)
+  gatewayMocks.stateHandler = null
   profileMocks.profile = ''
+  profileMocks.currentProfile = 'default'
 })
 
 afterEach(async () => {
@@ -115,7 +123,7 @@ describe('MobileApp', () => {
     await renderAt('/mobile')
 
     expect(container.textContent).toContain('Hermes')
-    expect(container.textContent).toContain('Good evening.')
+    expect(container.textContent).toMatch(/Good (morning|afternoon|evening)\./)
     expect(container.textContent).not.toContain('Abdiel')
     expect(container.textContent).toContain('Connected')
     expect(container.textContent).toContain('New chat')
@@ -126,8 +134,102 @@ describe('MobileApp', () => {
   it('exposes the approved four-tab mobile navigation', async () => {
     await renderAt('/mobile')
 
-    const labels = Array.from(container.querySelectorAll('nav a')).map(node => node.textContent?.trim())
+    const links = Array.from(container.querySelectorAll('.mobile-bottom-nav a'))
+    const labels = links.map(node => node.textContent)
     expect(labels).toEqual(['Home', 'Chats', 'Tasks', 'More'])
+    expect(links.map(node => node.getAttribute('aria-current'))).toEqual(['page', null, null, null])
+  })
+
+  it('uses a time-appropriate greeting and correct active-session grammar', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-09T08:00:00-04:00'))
+    try {
+      apiMocks.getStatus.mockResolvedValueOnce({
+        active_sessions: 2,
+        gateway_running: true,
+        gateway_state: 'running',
+        version: '1.0.0'
+      })
+      await renderAt('/mobile')
+
+      expect(container.textContent).toContain('Good morning.')
+      expect(container.textContent).toContain('2 sessions active.')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows the soonest scheduled task first with a readable run time', async () => {
+    apiMocks.getCronJobs.mockResolvedValueOnce([
+      { id: 'later', enabled: true, name: 'Later task', next_run_at: '2026-08-10T18:00:00-04:00' },
+      { id: 'soon', enabled: true, name: 'Soon task', next_run_at: '2026-08-10T09:00:00-04:00' },
+      { id: 'paused', enabled: false, name: 'Paused task', next_run_at: '2026-08-09T08:00:00-04:00' }
+    ])
+    await renderAt('/mobile/tasks')
+
+    const names = Array.from(container.querySelectorAll('.mobile-task-card strong')).map(node => node.textContent)
+    const schedule = container.querySelector('.mobile-task-card small')?.textContent ?? ''
+    expect(names).toEqual(['Soon task', 'Later task', 'Paused task'])
+    expect(schedule).not.toContain('2026-08-10T09:00:00-04:00')
+    expect(schedule).toMatch(/Aug|Today|Tomorrow/)
+  })
+
+  it('keeps a new-chat composer disabled until the gateway connection is ready', async () => {
+    let finishConnect!: () => void
+    gatewayMocks.connect.mockReturnValueOnce(new Promise<void>(resolve => {
+      finishConnect = resolve
+    }))
+    await renderAt('/mobile/chat/new')
+
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    expect(textarea.disabled).toBe(true)
+    expect(textarea.placeholder).toBe('Connecting to Hermes…')
+
+    await act(async () => {
+      finishConnect()
+      await Promise.resolve()
+    })
+    expect(textarea.disabled).toBe(false)
+  })
+
+  it('restores the typed prompt when sending fails', async () => {
+    gatewayMocks.request.mockImplementation(async (method: string) => {
+      if (method === 'session.create') return { session_id: 'runtime-1', stored_session_id: 'stored-1' }
+      if (method === 'prompt.submit') throw new Error('Connection lost')
+      return {}
+    })
+    await renderAt('/mobile/chat/new')
+
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    const form = container.querySelector('form') as HTMLFormElement
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      valueSetter?.call(textarea, 'Do not lose this prompt')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(textarea.value).toBe('Do not lose this prompt')
+    expect(container.textContent).toContain('Connection lost')
+    expect(container.querySelectorAll('.mobile-bubble.is-user')).toHaveLength(0)
+  })
+
+  it('disables sending after the gateway closes without losing the draft', async () => {
+    await renderAt('/mobile/chat/new')
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      valueSetter?.call(textarea, 'Keep this while reconnecting')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      gatewayMocks.stateHandler?.('closed')
+    })
+
+    expect(textarea.disabled).toBe(true)
+    expect(textarea.value).toBe('Keep this while reconnecting')
   })
 
   it('submits a prompt only once when send is triggered twice before streaming starts', async () => {
@@ -200,6 +302,70 @@ describe('MobileApp', () => {
     })
 
     expect(gatewayMocks.request).toHaveBeenCalledWith('session.create', expect.objectContaining({ profile: 'mabel' }))
+  })
+
+  it('loads tasks only from the selected management profile', async () => {
+    profileMocks.profile = 'mabel'
+    await renderAt('/mobile/tasks')
+
+    expect(apiMocks.getCronJobs).toHaveBeenCalledWith('mabel')
+    expect(apiMocks.getCronJobs).not.toHaveBeenCalledWith('all')
+  })
+
+  it('shows a load error instead of claiming a failed conversations request is empty', async () => {
+    apiMocks.getSessions.mockRejectedValueOnce(new Error('offline'))
+    await renderAt('/mobile/chats')
+
+    expect(container.textContent).toContain('Could not load conversations.')
+    expect(container.textContent).not.toContain('No conversations yet.')
+  })
+
+  it('renders completed conversations without waiting for unrelated requests', async () => {
+    apiMocks.getStatus.mockReturnValueOnce(new Promise(() => {}))
+    apiMocks.getCronJobs.mockReturnValueOnce(new Promise(() => {}))
+    await renderAt('/mobile/chats')
+
+    expect(container.textContent).toContain('Hermes mobile PWA')
+    expect(container.textContent).not.toContain('Loading conversations…')
+  })
+
+  it('hides the previous profile status while the next profile is loading', async () => {
+    apiMocks.getStatus.mockResolvedValueOnce({
+      active_sessions: 7,
+      gateway_running: true,
+      gateway_state: 'running',
+      version: '1.0.0'
+    })
+    await renderAt('/mobile')
+    expect(container.textContent).toContain('7 sessions active.')
+
+    apiMocks.getStatus.mockReturnValueOnce(new Promise(() => {}))
+    profileMocks.profile = 'mabel'
+    await renderAt('/mobile')
+
+    expect(container.textContent).not.toContain('7 sessions active.')
+    expect(container.textContent).toContain('Loading Hermes status…')
+  })
+
+  it('shows a load error instead of claiming a failed tasks request is empty', async () => {
+    apiMocks.getCronJobs.mockRejectedValueOnce(new Error('offline'))
+    await renderAt('/mobile/tasks')
+
+    expect(container.textContent).toContain('Could not load scheduled tasks.')
+    expect(container.textContent).not.toContain('No scheduled tasks.')
+  })
+
+  it('keeps a resumed chat usable when only transcript loading fails', async () => {
+    apiMocks.getSessionMessages.mockRejectedValueOnce(new Error('history unavailable'))
+    await renderAt('/mobile/chat/session-1')
+
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    expect(container.textContent).toContain('Could not load conversation history.')
+    expect(textarea.disabled).toBe(false)
+    expect(gatewayMocks.request).toHaveBeenCalledWith(
+      'session.resume',
+      expect.objectContaining({ session_id: 'session-1' })
+    )
   })
 
   it('cannot submit to the previous runtime while switching sessions', async () => {

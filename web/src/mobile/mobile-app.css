@@ -28,7 +28,7 @@
   min-height: calc(3.75rem + env(safe-area-inset-top, 0px));
   padding: env(safe-area-inset-top, 0px) 0.65rem 0;
   display: grid;
-  grid-template-columns: 2.75rem 1fr 2.75rem;
+  grid-template-columns: 3rem 1fr 3rem;
   align-items: center;
   border-bottom: 1px solid var(--mobile-line);
   background: color-mix(in srgb, var(--mobile-bg) 92%, transparent);
@@ -37,8 +37,8 @@
   z-index: 10;
 }
 .mobile-icon-button {
-  width: 2.75rem;
-  height: 2.75rem;
+  width: 3rem;
+  height: 3rem;
   border: 0;
   border-radius: 0.85rem;
   background: transparent;
@@ -172,8 +172,8 @@
   text-transform: uppercase;
 }
 .mobile-section-heading a {
-  min-width: 2.75rem;
-  min-height: 2.75rem;
+  min-width: 3rem;
+  min-height: 3rem;
   color: var(--mobile-accent);
   font-size: 0.72rem;
   text-decoration: none;
@@ -212,7 +212,7 @@
   font-size: 0.67rem;
 }
 .mobile-resume-card button {
-  min-height: 2.75rem;
+  min-height: 3rem;
   padding: 0 0.9rem;
   border: 0;
   border-radius: 0.75rem;
@@ -308,8 +308,8 @@
   padding: 0.35rem 0.15rem 1.1rem;
 }
 .mobile-round-action {
-  width: 2.8rem;
-  height: 2.8rem;
+  width: 3rem;
+  height: 3rem;
   border-radius: 50%;
   background: var(--mobile-accent);
   color: var(--mobile-accent-text);
@@ -529,12 +529,12 @@
   border-top: 1px solid var(--mobile-line);
   background: var(--mobile-bg);
   display: grid;
-  grid-template-columns: 2.75rem minmax(0, 1fr) 2.75rem;
+  grid-template-columns: 3rem minmax(0, 1fr) 3rem;
   align-items: end;
   gap: 0.25rem;
 }
 .mobile-composer textarea {
-  min-height: 2.75rem;
+  min-height: 3rem;
   max-height: 7rem;
   padding: 0.78rem 0.65rem;
   border: 1px solid var(--mobile-line);
@@ -551,8 +551,8 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--mobile-accent) 15%, transparent);
 }
 .mobile-send {
-  width: 2.75rem;
-  height: 2.75rem;
+  width: 3rem;
+  height: 3rem;
   border: 0;
   border-radius: 50%;
   background: var(--mobile-accent);
