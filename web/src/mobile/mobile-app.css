@@ -393,6 +393,7 @@
   right: 0;
   bottom: 0;
   z-index: 20;
+  box-sizing: border-box;
   min-height: calc(4rem + env(safe-area-inset-bottom, 0px));
   padding: 0.35rem 0.45rem env(safe-area-inset-bottom, 0px);
   border-top: 1px solid var(--mobile-line);
