@@ -16,8 +16,9 @@ describe('PWA cache busting', () => {
   it('reloads controlled windows after a new service worker activates', () => {
     const worker = readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8')
 
+    expect(worker).toContain('const HERMES_DEPLOY_REVISION = "__HERMES_DEPLOY_REVISION__"')
     expect(worker).toContain('searchParams.get("v")')
-    expect(worker).toContain('?? "v2"')
+    expect(worker).toContain('HERMES_DEPLOY_REVISION}-${HERMES_PWA_URL_REVISION')
     expect(worker).toContain('client.navigate(client.url)')
   })
 })

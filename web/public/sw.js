@@ -1,5 +1,6 @@
-const HERMES_PWA_REVISION = new URL(self.location.href).searchParams.get("v") ?? "v2";
-const HERMES_PWA_CACHE = `hermes-dashboard-static-${HERMES_PWA_REVISION}`;
+const HERMES_DEPLOY_REVISION = "__HERMES_DEPLOY_REVISION__";
+const HERMES_PWA_URL_REVISION = new URL(self.location.href).searchParams.get("v") ?? "app";
+const HERMES_PWA_CACHE = `hermes-dashboard-static-${HERMES_DEPLOY_REVISION}-${HERMES_PWA_URL_REVISION}`;
 const STATIC_PATH_PREFIXES = [
   "/assets/",
   "/fonts/",
