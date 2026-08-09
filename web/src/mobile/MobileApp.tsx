@@ -841,18 +841,6 @@ export function MobileApp() {
         setStatusLoad({ phase: 'error', scope: requestScope })
       }
     )
-    void api.getSessions(30, 0, { order: 'recent', profile }).then(
-      value => {
-        if (cancelled) return
-        setSessions(value.sessions)
-        setSessionsLoad({ phase: 'ready', scope: requestScope })
-      },
-      () => {
-        if (cancelled) return
-        setSessions([])
-        setSessionsLoad({ phase: 'error', scope: requestScope })
-      }
-    )
     void api.getCronJobs(requestScope).then(
       value => {
         if (cancelled) return
@@ -863,6 +851,28 @@ export function MobileApp() {
         if (cancelled) return
         setCronJobs([])
         setTasksLoad({ phase: 'error', scope: requestScope })
+      }
+    )
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedProfile])
+
+  useEffect(() => {
+    let cancelled = false
+    const requestScope = selectedProfile
+
+    void api.getSessions(30, 0, { order: 'recent', profile }).then(
+      value => {
+        if (cancelled) return
+        setSessions(value.sessions)
+        setSessionsLoad({ phase: 'ready', scope: requestScope })
+      },
+      () => {
+        if (cancelled) return
+        setSessions([])
+        setSessionsLoad({ phase: 'error', scope: requestScope })
       }
     )
 

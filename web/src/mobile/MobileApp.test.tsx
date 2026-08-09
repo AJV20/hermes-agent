@@ -511,6 +511,8 @@ describe('MobileApp', () => {
     })
     await vi.waitFor(() => expect(container.textContent).toContain('Fresh mobile chat'))
     expect(apiMocks.getSessions.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(apiMocks.getStatus).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getCronJobs).toHaveBeenCalledTimes(1)
   })
 
   it('loads tasks only from the selected management profile', async () => {
