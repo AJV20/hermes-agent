@@ -394,8 +394,8 @@
   bottom: 0;
   z-index: 20;
   box-sizing: border-box;
-  min-height: calc(4rem + env(safe-area-inset-bottom, 0px));
-  padding: 0.35rem 0.45rem env(safe-area-inset-bottom, 0px);
+  min-height: calc(4rem + min(env(safe-area-inset-bottom, 0px), 1rem));
+  padding: 0.35rem 0.45rem min(env(safe-area-inset-bottom, 0px), 1rem);
   border-top: 1px solid var(--mobile-line);
   background: color-mix(in srgb, var(--mobile-bg) 94%, transparent);
   backdrop-filter: blur(18px);
