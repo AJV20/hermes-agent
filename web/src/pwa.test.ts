@@ -1,15 +1,16 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 import { buildServiceWorkerUrl } from './pwa'
 
 describe('PWA mobile shell', () => {
-  it('disables viewport zooming in the installed mobile app', () => {
+  it('allows viewport zooming while retaining the mobile safe-area viewport', () => {
     const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8')
     const viewport = html.match(/<meta\s+name="viewport"\s+content="([^"]+)"/s)?.[1]
 
-    expect(viewport).toContain('maximum-scale=1.0')
-    expect(viewport).toContain('user-scalable=no')
+    expect(viewport).toContain('viewport-fit=cover')
+    expect(viewport).not.toContain('maximum-scale')
+    expect(viewport).not.toContain('user-scalable')
   })
 
   it('versions the service-worker URL from the current hashed app bundle', () => {
@@ -28,5 +29,33 @@ describe('PWA mobile shell', () => {
     expect(worker).toContain('searchParams.get("v")')
     expect(worker).toContain('HERMES_DEPLOY_REVISION}-${HERMES_PWA_URL_REVISION')
     expect(worker).toContain('client.navigate(client.url)')
+  })
+
+  it('does not cache HTML or authenticated and realtime traffic', () => {
+    const worker = readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8')
+
+    expect(worker).toContain('if (request.destination === "document") return false;')
+    expect(worker).toContain('if (request.headers.get("accept")?.includes("text/html")) return false;')
+    expect(worker).toContain('pathname === "/index.html"')
+    expect(worker).toContain('pathname === "/auth" || pathname.startsWith("/auth/")')
+    expect(worker).toContain('request.headers.get("upgrade")?.toLowerCase() === "websocket"')
+    expect(worker).toContain('!response.headers.get("content-type")?.toLowerCase().includes("text/html")')
+  })
+
+  it('falls back to a credential-free offline document only when a navigation fetch fails', () => {
+    const worker = readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8')
+    const offlineUrl = new URL('../public/offline.html', import.meta.url)
+
+    expect(existsSync(offlineUrl)).toBe(true)
+    const offlineDocument = readFileSync(offlineUrl, 'utf8')
+    expect(offlineDocument).toContain('<title>Hermes is offline</title>')
+    expect(offlineDocument).not.toMatch(/token|cookie|authorization|session/i)
+
+    expect(worker).toContain('const HERMES_OFFLINE_URL = new URL("offline.html", self.registration.scope).toString();')
+    expect(worker).toContain('await cache.add(HERMES_OFFLINE_URL);')
+    expect(worker).toContain('if (request.mode === "navigate") {')
+    expect(worker).toContain('event.respondWith(fetch(request).catch(async () => {')
+    expect(worker).toContain('cache.match(HERMES_OFFLINE_URL)')
+    expect(worker).toContain('if (pathname === "/api" || pathname.startsWith("/api/")) return false;')
   })
 })
