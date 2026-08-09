@@ -17,12 +17,12 @@ import {
   Sparkles,
   Wifi
 } from 'lucide-react'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type FormEvent, type ReactNode } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router'
 
 import { Markdown } from '@/components/Markdown'
 import { useProfileScope } from '@/contexts/useProfileScope'
-import { api, type CronJob, type SessionInfo, type StatusResponse } from '@/lib/api'
+import { api, HERMES_BASE_PATH, type CronJob, type SessionInfo, type StatusResponse } from '@/lib/api'
 import { GatewayClient, type GatewayEvent } from '@/lib/gatewayClient'
 import {
   applyMobileGatewayEvent,
@@ -32,6 +32,7 @@ import {
   type MobileChatState,
   type MobileResumeSnapshot
 } from './mobile-chat-state'
+import { desktopDocumentHref } from './mobile-desktop-link'
 import { syncMobileViewportHeight } from './mobile-viewport'
 import './mobile-app.css'
 
@@ -212,6 +213,10 @@ function BottomNavigation({ active }: { active: ReturnType<typeof routeTab> }) {
   )
 }
 
+function DesktopDocumentLink({ to, ...props }: { to: string } & Omit<ComponentPropsWithoutRef<'a'>, 'href'>) {
+  return <a {...props} href={desktopDocumentHref(to, HERMES_BASE_PATH)} />
+}
+
 function QuickAction({ icon, label, to }: { icon: ReactNode; label: string; to: string }) {
   return (
     <Link className="mobile-quick-action" to={to}>
@@ -283,8 +288,14 @@ function HomeScreen({
         <section className="mobile-quick-grid" aria-label="Quick actions">
           <QuickAction icon={<Plus />} label="New chat" to="/mobile/chat/new" />
           <QuickAction icon={<MessageCircle />} label="Chats" to="/mobile/chats" />
-          <QuickAction icon={<FileUp />} label="Upload" to="/files" />
-          <QuickAction icon={<Wifi />} label="Desktop" to="/system" />
+          <DesktopDocumentLink className="mobile-quick-action" to="/files">
+            <FileUp />
+            <strong>Upload</strong>
+          </DesktopDocumentLink>
+          <DesktopDocumentLink className="mobile-quick-action" to="/system">
+            <Wifi />
+            <strong>Desktop</strong>
+          </DesktopDocumentLink>
         </section>
 
         {sessionsPhase === 'loading' && (
@@ -395,7 +406,7 @@ function TasksScreen({ jobs, phase }: { jobs: CronJob[]; phase: LoadPhase }) {
         </div>
         <div className="mobile-task-list">
           {phase === 'ready' && jobs.map(job => (
-            <Link className="mobile-task-card" key={job.id} to="/cron">
+            <DesktopDocumentLink className="mobile-task-card" key={job.id} to="/cron">
               <span className="mobile-task-icon">{job.last_status === 'success' ? <CheckCircle2 /> : <Clock3 />}</span>
               <span>
                 <strong>{job.name || 'Hermes task'}</strong>
@@ -404,7 +415,7 @@ function TasksScreen({ jobs, phase }: { jobs: CronJob[]; phase: LoadPhase }) {
               <span className={`mobile-status-pill ${job.enabled ? '' : 'is-muted'}`}>
                 {job.enabled ? 'Enabled' : 'Paused'}
               </span>
-            </Link>
+            </DesktopDocumentLink>
           ))}
           {phase === 'loading' && <div className="mobile-empty-card" aria-busy="true">Loading scheduled tasks…</div>}
           {phase === 'error' && <div className="mobile-empty-card" role="alert">Could not load scheduled tasks.</div>}
@@ -436,11 +447,11 @@ function MoreScreen() {
           {links.map(item => {
             const Icon = item.icon
             return (
-              <Link key={item.to} to={item.to}>
+              <DesktopDocumentLink key={item.to} to={item.to}>
                 <Icon />
                 <strong>{item.label}</strong>
                 <ChevronRight />
-              </Link>
+              </DesktopDocumentLink>
             )
           })}
         </div>
@@ -788,9 +799,9 @@ function ChatScreen({
         </button>
       )}
       <form className="mobile-composer" onSubmit={submit}>
-        <IconButton label="Open files" onClick={() => navigate('/files')}>
+        <DesktopDocumentLink aria-label="Open files" className="mobile-icon-button" to="/files">
           <Plus />
-        </IconButton>
+        </DesktopDocumentLink>
         <textarea
           aria-label="Message Hermes"
           disabled={!ready || chat.busy}

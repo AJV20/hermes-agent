@@ -10,6 +10,7 @@
     "lint:fix": "eslint . --fix",
     "fix": "npm run lint:fix",
     "preview": "vite preview",
+    "verify:mobile-budget": "node scripts/verify-mobile-budget.mjs",
     "typecheck": "tsc -p . --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm run test && npm run lint"

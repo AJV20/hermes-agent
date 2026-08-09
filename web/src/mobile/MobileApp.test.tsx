@@ -51,7 +51,7 @@ const gatewayMocks = vi.hoisted(() => ({
 }))
 const profileMocks = vi.hoisted(() => ({ currentProfile: 'default', profile: '' }))
 
-vi.mock('@/lib/api', () => ({ api: apiMocks }))
+vi.mock('@/lib/api', () => ({ api: apiMocks, HERMES_BASE_PATH: '' }))
 vi.mock('@/contexts/useProfileScope', () => ({
   useProfileScope: () => ({ currentProfile: profileMocks.currentProfile, profile: profileMocks.profile })
 }))
@@ -117,7 +117,7 @@ afterEach(async () => {
 async function renderAt(path: string) {
   await act(async () => {
     root.render(
-      <MemoryRouter initialEntries={[path]}>
+      <MemoryRouter initialEntries={[path]} key={path}>
         <MobileAppHarness />
       </MemoryRouter>
     )
@@ -145,6 +145,34 @@ describe('MobileApp', () => {
     const labels = links.map(node => node.textContent)
     expect(labels).toEqual(['Home', 'Chats', 'Tasks', 'More'])
     expect(links.map(node => node.getAttribute('aria-current'))).toEqual(['page', null, null, null])
+  })
+
+  it('uses normal document anchors for cross-shell desktop destinations', async () => {
+    const expectDocumentAnchor = (href: string) => {
+      const link = container.querySelector(`a[href="${href}"]`) as HTMLAnchorElement
+      expect(link).not.toBeNull()
+      link.target = '_blank'
+      const event = new MouseEvent('click', { bubbles: true, cancelable: true })
+      link.dispatchEvent(event)
+      expect(event.defaultPrevented).toBe(false)
+    }
+
+    await renderAt('/mobile')
+    expectDocumentAnchor('/files')
+    expectDocumentAnchor('/system')
+
+    await renderAt('/mobile/tasks')
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expectDocumentAnchor('/cron')
+
+    await renderAt('/mobile/more')
+    expectDocumentAnchor('/models')
+    expectDocumentAnchor('/files')
+    expectDocumentAnchor('/skills')
+    expectDocumentAnchor('/system')
   })
 
   it('uses a time-appropriate greeting and correct active-session grammar', async () => {

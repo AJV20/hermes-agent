@@ -72,7 +72,6 @@ import { ProfileProvider } from "@/contexts/ProfileProvider";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
-import { MobileApp } from "@/mobile/MobileApp";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
 // Route pages are lazy-loaded so the initial dashboard shell does not pay for
@@ -824,16 +823,6 @@ function DashboardApp() {
 }
 
 export default function App() {
-  const { pathname } = useLocation();
-
-  if (pathname === "/mobile" || pathname.startsWith("/mobile/")) {
-    return (
-      <ProfileProvider>
-        <MobileApp />
-      </ProfileProvider>
-    );
-  }
-
   return <DashboardApp />;
 }
 
