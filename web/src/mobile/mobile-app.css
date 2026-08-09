@@ -8,6 +8,7 @@
   --mobile-line: var(--color-border, rgba(255, 240, 221, 0.16));
   --mobile-accent: var(--color-primary, #ffca8d);
   --mobile-accent-text: var(--color-primary-foreground, #071a1a);
+  --mobile-safe-bottom: env(safe-area-inset-bottom, 0px);
   min-height: 100dvh;
   height: 100dvh;
   background: var(--mobile-bg);
@@ -391,19 +392,35 @@
   position: fixed;
   left: 0;
   right: 0;
-  bottom: calc(min(env(safe-area-inset-bottom, 0px), 1rem) - env(safe-area-inset-bottom, 0px));
+  bottom: 0;
   z-index: 20;
   box-sizing: border-box;
-  min-height: 4rem;
-  padding: 0.35rem 0.45rem;
+  min-height: calc(4rem + var(--mobile-safe-bottom));
+  padding: 0.35rem 0.45rem min(var(--mobile-safe-bottom), 1rem);
+  background: transparent;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  align-items: end;
+  pointer-events: none;
+}
+.mobile-bottom-nav::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(4rem + min(var(--mobile-safe-bottom), 1rem));
   border-top: 1px solid var(--mobile-line);
   background: color-mix(in srgb, var(--mobile-bg) 94%, transparent);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  pointer-events: none;
 }
 .mobile-bottom-nav a {
+  height: 3.3rem;
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
   min-width: 0;
   border-radius: 0.8rem;
   color: var(--mobile-muted);

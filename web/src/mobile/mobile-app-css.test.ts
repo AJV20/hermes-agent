@@ -4,13 +4,19 @@ import { describe, expect, it } from 'vitest'
 const styles = readFileSync(new URL('./mobile-app.css', import.meta.url), 'utf8')
 
 describe('mobile bottom navigation layout', () => {
-  it('extends through oversized iOS bottom insets while retaining a compact margin', () => {
-    const rule = styles.match(/\.mobile-bottom-nav\s*\{([^}]*)\}/)?.[1] ?? ''
-    const inset = 'env(safe-area-inset-bottom, 0px)'
-    const retainedMargin = `min(${inset}, 1rem)`
+  it('renders compact controls and chrome at the bottom of the full iOS safe area', () => {
+    const nav = styles.match(/\.mobile-bottom-nav\s*\{([^}]*)\}/)?.[1] ?? ''
+    const chrome = styles.match(/\.mobile-bottom-nav::before\s*\{([^}]*)\}/)?.[1] ?? ''
+    const link = styles.match(/\.mobile-bottom-nav a\s*\{([^}]*)\}/)?.[1] ?? ''
 
-    expect(rule).toContain(`bottom: calc(${retainedMargin} - ${inset})`)
-    expect(rule).toContain('min-height: 4rem')
-    expect(rule).toContain('padding: 0.35rem 0.45rem')
+    expect(styles).toContain('--mobile-safe-bottom: env(safe-area-inset-bottom, 0px)')
+    expect(nav).toContain('bottom: 0')
+    expect(nav).toContain('min-height: calc(4rem + var(--mobile-safe-bottom))')
+    expect(nav).toContain('padding: 0.35rem 0.45rem min(var(--mobile-safe-bottom), 1rem)')
+    expect(nav).toContain('align-items: end')
+    expect(nav).toContain('pointer-events: none')
+    expect(chrome).toContain('height: calc(4rem + min(var(--mobile-safe-bottom), 1rem))')
+    expect(link).toContain('height: 3.3rem')
+    expect(link).toContain('pointer-events: auto')
   })
 })
