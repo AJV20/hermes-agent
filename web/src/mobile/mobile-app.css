@@ -815,9 +815,11 @@
   -webkit-backdrop-filter: blur(8px);
   display: flex;
   align-items: flex-end;
+  justify-content: center;
 }
 .mobile-bottom-sheet {
   width: 100%;
+  max-width: 31rem;
   max-height: min(80dvh, 42rem);
   padding: 0.55rem 1rem;
   padding-bottom: calc(1rem + var(--mobile-safe-bottom-capped));
