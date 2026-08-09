@@ -34,11 +34,17 @@ export function registerHermesPwa(): void {
   const swUrl = buildServiceWorkerUrl(basePath, moduleScript?.src ?? "app");
   const scope = basePath ? `${basePath}/` : "/";
 
-  window.addEventListener("load", () => {
+  const register = () => {
     navigator.serviceWorker.register(swUrl, { scope }).catch((error: unknown) => {
       // PWA support is a convenience layer. Never block the dashboard if a
       // browser, reverse proxy, or development server refuses registration.
       console.warn("[Hermes PWA] Service worker registration failed", error);
     });
-  });
+  };
+
+  if (document.readyState === "complete") {
+    register();
+  } else {
+    window.addEventListener("load", register, { once: true });
+  }
 }
