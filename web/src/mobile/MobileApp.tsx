@@ -12,6 +12,7 @@ import { ChatsScreen } from './screens/ChatsScreen'
 import { HomeScreen } from './screens/HomeScreen'
 import { MoreScreen } from './screens/MoreScreen'
 import { NotificationsScreen } from './screens/NotificationsScreen'
+import { PushSettingsScreen } from './screens/PushSettingsScreen'
 import { TasksScreen } from './screens/TasksScreen'
 import type { LoadPhase, ScopedLoadState } from './types'
 import { BottomNavigation } from './ui/primitives'
@@ -223,7 +224,11 @@ export function MobileApp() {
         />
       )}
       {active === 'tasks' && <TasksScreen jobs={orderedCronJobs} phase={tasksPhase} profile={selectedProfile} />}
-      {active === 'more' && (pathname.startsWith('/mobile/notifications') ? <NotificationsScreen key={profile || 'default'} profile={profile} /> : <MoreScreen onPreferencesChange={setPreferences} preferences={preferences} profile={selectedProfile} />)}
+      {active === 'more' && (pathname.startsWith('/mobile/notifications')
+        ? <NotificationsScreen key={profile || 'default'} profile={profile} />
+        : pathname.startsWith('/mobile/push')
+          ? <PushSettingsScreen key={profile || 'default'} profile={profile} />
+          : <MoreScreen onPreferencesChange={setPreferences} preferences={preferences} profile={selectedProfile} />)}
       <BottomNavigation active={active} />
       <PwaUpdateBanner onLater={deferUpdate} visible={updateReady} />
     </div>

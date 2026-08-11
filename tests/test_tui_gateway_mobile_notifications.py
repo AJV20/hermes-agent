@@ -1,3 +1,4 @@
+from hermes_cli import mobile_push
 from hermes_cli.mobile_notifications import list_notifications
 from tui_gateway import server
 
@@ -36,3 +37,32 @@ def test_gateway_notice_is_persisted_before_fanout_and_clear_dismisses(monkeypat
     finally:
         with server._sessions_lock:
             server._sessions.pop("runtime-1", None)
+
+
+def test_gateway_uses_one_active_home_vapid_identity_for_profile_local_queue(monkeypatch, tmp_path):
+    active_home = tmp_path / "active"
+    profile_home = tmp_path / "profile"
+    active_home.mkdir()
+    profile_home.mkdir()
+    (active_home / "config.yaml").write_text(
+        "mobile:\n  push:\n    enabled: true\n    vapid_subject: mailto:test@example.test\n"
+    )
+    senders = []
+    kicked = []
+    monkeypatch.setattr(server, "_hermes_home", active_home)
+    monkeypatch.setattr(server, "write_json", lambda _frame: None)
+    monkeypatch.setattr(mobile_push, "make_pywebpush_sender", lambda _getter, *, home, subject: senders.append((home, subject)) or object())
+    monkeypatch.setattr(mobile_push, "kick_delivery_worker", lambda home, *, send: kicked.append((home, send)))
+    with server._sessions_lock:
+        server._sessions["runtime-push"] = {
+            "profile_home": str(profile_home),
+            "session_key": "session",
+        }
+    try:
+        server._emit("notification.show", "runtime-push", {"key": "profile-event", "text": "Done"})
+    finally:
+        with server._sessions_lock:
+            server._sessions.pop("runtime-push", None)
+
+    assert senders == [(active_home, "mailto:test@example.test")]
+    assert kicked and kicked[0][0] == profile_home

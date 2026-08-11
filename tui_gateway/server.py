@@ -20,6 +20,7 @@ from typing import Any, Callable, NamedTuple, Optional
 
 from agent.secret_scope import (
     build_profile_secret_scope,
+    get_secret,
     reset_secret_scope,
     set_secret_scope,
 )
@@ -1604,6 +1605,12 @@ def _persist_mobile_notification_event(event: str, sid: str, payload: dict | Non
         safe_kind = "".join(character for character in kind if character.isalnum() or character in "._-")[:64] or "notice"
         session_key = str(session.get("session_key") or "").strip() or None
         target = f"/mobile/chat/{quote(session_key, safe='')}" if session_key else "/mobile/notifications"
+        config_path = _hermes_home / "config.yaml"
+        from hermes_cli.config import read_user_config_raw
+        from hermes_cli.mobile_push import kick_delivery_worker, make_pywebpush_sender, push_settings
+        push_enabled, vapid_subject = push_settings(
+            read_user_config_raw(config_path) if config_path.is_file() else {}
+        )
         upsert_notification(
             home,
             body=text,
@@ -1614,7 +1621,23 @@ def _persist_mobile_notification_event(event: str, sid: str, payload: dict | Non
             target=target,
             title=f"Hermes {safe_kind.replace('_', ' ')}"[:160],
             type=safe_kind,
+            enqueue_push=push_enabled,
         )
+        # Notification and per-device jobs commit atomically when enabled.
+        # Delivery is leased by a daemon worker so gateway event processing
+        # never waits on endpoints.
+        if not push_enabled:
+            return
+        secret_token = set_secret_scope(build_profile_secret_scope(_hermes_home))
+        try:
+            sender = make_pywebpush_sender(
+                get_secret, home=_hermes_home, subject=vapid_subject
+            )
+            kick_delivery_worker(home, send=sender)
+        except Exception:
+            logger.debug("mobile Web Push delivery unavailable", exc_info=True)
+        finally:
+            reset_secret_scope(secret_token)
     except Exception:
         logger.debug("failed to persist mobile notification event", exc_info=True)
 

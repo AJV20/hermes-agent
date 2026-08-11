@@ -38,6 +38,7 @@ export function MoreScreen({ onPreferencesChange, preferences, profile }: {
   }
   const links = [
     { icon: Bell, label: 'Notifications', to: '/mobile/notifications' },
+    { icon: Bell, label: 'Push notifications', to: '/mobile/push' },
     { icon: Bot, label: 'Models and capabilities', to: '/models' },
     { icon: FileUp, label: 'Files', to: '/files' },
     { icon: Sparkles, label: 'Skills', to: '/skills' },

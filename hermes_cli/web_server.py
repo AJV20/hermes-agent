@@ -169,6 +169,54 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     provider.start(stop_event, interval=interval)
 
 
+def _mobile_push_server_enabled() -> bool:
+    from hermes_cli.mobile_push import push_settings
+    return push_settings(load_config())[0]
+
+
+def _mobile_push_vapid_subject() -> str:
+    from hermes_cli.mobile_push import push_settings
+    return push_settings(load_config())[1]
+
+
+def _mobile_push_delivery_homes() -> list[Path]:
+    active = get_hermes_home()
+    if active.parent.name == "profiles":
+        default_home = active.parent.parent
+        profiles_dir = active.parent
+    else:
+        default_home = active
+        profiles_dir = active / "profiles"
+    homes = {default_home, active}
+    if profiles_dir.is_dir():
+        homes.update(path for path in profiles_dir.iterdir() if path.is_dir())
+    return sorted(homes, key=str)
+
+
+def _kick_mobile_push_delivery(home: Path) -> None:
+    try:
+        from hermes_cli.mobile_push import kick_delivery_worker, make_pywebpush_sender
+
+        if not _mobile_push_server_enabled():
+            return
+        sender = make_pywebpush_sender(
+            _scoped_get_secret,
+            home=get_hermes_home(),
+            subject=_mobile_push_vapid_subject(),
+        )
+        kick_delivery_worker(home, send=sender)
+    except Exception:
+        _log.debug("mobile Web Push delivery unavailable", exc_info=True)
+
+
+async def _mobile_push_delivery_ticker_loop(interval: float = 30.0) -> None:
+    """Recover abandoned profile-local delivery jobs without blocking requests."""
+    while True:
+        for home in _mobile_push_delivery_homes():
+            _kick_mobile_push_delivery(home)
+        await asyncio.sleep(interval)
+
+
 def _warm_gateway_module() -> None:
     """Pre-import heavy modules so the event loop is not stalled on first use.
 
@@ -259,6 +307,7 @@ async def _lifespan(app: "FastAPI"):
     # Live auto-archive timer — keeps a backend that stays up for days
     # sweeping stale sessions on schedule, independent of list requests.
     auto_archive_task = asyncio.create_task(_auto_archive_ticker_loop())
+    push_delivery_task = asyncio.create_task(_mobile_push_delivery_ticker_loop())
 
     try:
         yield
@@ -266,6 +315,7 @@ async def _lifespan(app: "FastAPI"):
         pty_reaper_task.cancel()
         selftest_task.cancel()
         auto_archive_task.cancel()
+        push_delivery_task.cancel()
         await PTY_REGISTRY.close_all()
         if cron_stop is not None:
             cron_stop.set()
@@ -17710,7 +17760,10 @@ def _get_mobile_push_public_key() -> Optional[str]:
     execution context.
     """
     value = _scoped_get_secret("HERMES_MOBILE_WEB_PUSH_VAPID_PUBLIC_KEY", None)
-    if not isinstance(value, str) or not _MOBILE_PUSH_B64URL.fullmatch(value) or not 80 <= len(value) <= 128:
+    if not isinstance(value, str) or not _MOBILE_PUSH_B64URL.fullmatch(value) or len(value) != 87:
+        from hermes_cli.mobile_push import read_vapid_public_key
+        value = read_vapid_public_key(get_hermes_home())
+    if not isinstance(value, str) or not _MOBILE_PUSH_B64URL.fullmatch(value) or len(value) != 87:
         return None
     return value
 
@@ -17732,9 +17785,22 @@ class _MobilePushSubscriptionBody(BaseModel):
     @field_validator("endpoint")
     @classmethod
     def _endpoint(cls, value: str) -> str:
+        import ipaddress
         from urllib.parse import urlparse
         parsed = urlparse(value)
-        if parsed.scheme != "https" or not parsed.netloc or len(value) > 2048:
+        hostname = parsed.hostname or ""
+        try:
+            ipaddress.ip_address(hostname)
+        except ValueError:
+            is_ip_literal = False
+        else:
+            is_ip_literal = True
+        if (
+            parsed.scheme != "https" or not hostname or len(value) > 2048
+            or parsed.username is not None or parsed.password is not None
+            or parsed.fragment or parsed.port not in {None, 443}
+            or is_ip_literal or hostname == "localhost" or hostname.endswith(".local")
+        ):
             raise ValueError("push endpoint must use HTTPS")
         return value
 
@@ -17742,8 +17808,8 @@ class _MobilePushSubscriptionBody(BaseModel):
     @classmethod
     def _keys(cls, value: dict[str, str]) -> dict[str, str]:
         p256dh, auth = value.get("p256dh"), value.get("auth")
-        if (not isinstance(p256dh, str) or not _MOBILE_PUSH_B64URL.fullmatch(p256dh) or not 80 <= len(p256dh) <= 128
-                or not isinstance(auth, str) or not _MOBILE_PUSH_B64URL.fullmatch(auth) or not 16 <= len(auth) <= 64):
+        if (not isinstance(p256dh, str) or not _MOBILE_PUSH_B64URL.fullmatch(p256dh) or len(p256dh) != 87
+                or not isinstance(auth, str) or not _MOBILE_PUSH_B64URL.fullmatch(auth) or len(auth) != 22):
             raise ValueError("push encryption keys are invalid")
         return {"p256dh": p256dh, "auth": auth}
 
@@ -17760,20 +17826,27 @@ def _mobile_notification_headers(response: Response) -> None:
 
 
 @app.get("/api/mobile/push/capability")
-async def get_mobile_push_capability(request: Request, response: Response):
+async def get_mobile_push_capability(request: Request, response: Response, profile: Optional[str] = None):
     _require_token(request)
     _mobile_notification_headers(response)
     public_key = _get_mobile_push_public_key()
-    return {"enabled": bool(public_key), "public_key": public_key, "preview": False}
+    from hermes_cli.mobile_push import is_transport_available
+    enabled = _mobile_push_server_enabled() and bool(public_key) and is_transport_available()
+    return {"enabled": enabled, "public_key": public_key if enabled else None, "preview": False}
 
 
-@app.get("/api/mobile/push/subscription")
-async def get_mobile_push_subscriptions(request: Request, response: Response, profile: Optional[str] = None):
+@app.get("/api/mobile/push/subscription/{device_id}")
+async def get_mobile_push_subscription(
+    device_id: str, request: Request, response: Response, profile: Optional[str] = None
+):
     _require_token(request)
     _mobile_notification_headers(response)
-    from hermes_cli.mobile_push import list_subscriptions
+    if not re.fullmatch(r"[A-Za-z0-9_-]{12,128}", device_id):
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    from hermes_cli.mobile_push import get_subscription
     _profile, home = _mobile_notification_home(profile)
-    return {"items": await asyncio.to_thread(list_subscriptions, home)}
+    item = await asyncio.to_thread(get_subscription, home, device_id)
+    return {"subscription": item}
 
 
 @app.put("/api/mobile/push/subscription")
@@ -17782,12 +17855,23 @@ async def put_mobile_push_subscription(
 ):
     _require_token(request)
     _mobile_notification_headers(response)
-    if not _get_mobile_push_public_key():
+    from hermes_cli.mobile_push import is_transport_available
+    if not _mobile_push_server_enabled() or not _get_mobile_push_public_key() or not is_transport_available():
         raise HTTPException(status_code=409, detail="Web Push is not configured")
     from hermes_cli.mobile_push import upsert_subscription
     _profile, home = _mobile_notification_home(profile)
-    await asyncio.to_thread(upsert_subscription, home, device_id=body.device_id, endpoint=body.endpoint,
-                            p256dh=body.keys["p256dh"], auth=body.keys["auth"], categories=body.categories)
+    try:
+        await asyncio.to_thread(
+            upsert_subscription,
+            home,
+            device_id=body.device_id,
+            endpoint=body.endpoint,
+            p256dh=body.keys["p256dh"],
+            auth=body.keys["auth"],
+            categories=body.categories,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"ok": True, "device_id": body.device_id}
 
 
@@ -17853,7 +17937,7 @@ async def post_mobile_notification(
     from hermes_cli.mobile_notifications import upsert_notification
 
     profile_name, home = _mobile_notification_home(profile)
-    return await asyncio.to_thread(
+    notification = await asyncio.to_thread(
         upsert_notification,
         home,
         body=body.body,
@@ -17865,6 +17949,10 @@ async def post_mobile_notification(
         title=body.title,
         type=body.type,
     )
+    # Notification and per-device delivery jobs are committed atomically above.
+    # The worker only leases and delivers after the request-visible write exists.
+    _kick_mobile_push_delivery(home)
+    return notification
 
 
 async def _set_mobile_notification_state(

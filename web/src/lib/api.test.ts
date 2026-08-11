@@ -176,6 +176,25 @@ describe("api mobile notifications", () => {
   });
 });
 
+describe("api mobile push", () => {
+  it("scopes capability and subscription writes to the selected profile", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ enabled: true, public_key: "B".repeat(87), preview: false });
+    vi.stubGlobal("fetch", fetchMock);
+    const subscription = { device_id: "device-opaque-123", endpoint: "https://push.example.test/a", keys: { p256dh: "A", auth: "B" }, categories: ["error"] as Array<"error"> };
+
+    await api.getMobilePushCapability("mabel");
+    await api.getMobilePushSubscription("device-opaque-123", "mabel");
+    await api.putMobilePushSubscription(subscription, "mabel");
+    await api.deleteMobilePushSubscription("device-opaque-123", "mabel");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/mobile/push/capability?profile=mabel", expect.objectContaining({ credentials: "include" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/mobile/push/subscription/device-opaque-123?profile=mabel", expect.objectContaining({ credentials: "include" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/mobile/push/subscription?profile=mabel", expect.objectContaining({ method: "PUT", body: JSON.stringify(subscription) }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/mobile/push/subscription/device-opaque-123?profile=mabel", expect.objectContaining({ method: "DELETE" }));
+  });
+});
+
 describe("api.getModelOptions", () => {
   it("requests a live model refresh when asked", async () => {
     vi.stubGlobal("window", {});

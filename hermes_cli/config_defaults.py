@@ -1349,6 +1349,15 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Mobile client settings. Web Push stays opt-in at both the server and
+    # individual-device layers; private VAPID material is never stored here.
+    "mobile": {
+        "push": {
+            "enabled": False,
+            "vapid_subject": "mailto:admin@localhost",
+        },
+    },
+
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"

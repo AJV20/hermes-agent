@@ -459,6 +459,16 @@ export const api = {
     }),
   renameSession: (id: string, title: string, profile = getManagementProfile()) =>
     api.updateSession(id, { title }, profile),
+  getMobilePushCapability: (profile = getManagementProfile()) =>
+    fetchJSON<MobilePushCapability>(appendProfileParam("/api/mobile/push/capability", profile)),
+  getMobilePushSubscription: (deviceId: string, profile = getManagementProfile()) =>
+    fetchJSON<{ subscription: MobilePushSubscriptionSummary | null }>(appendProfileParam(`/api/mobile/push/subscription/${encodeURIComponent(deviceId)}`, profile)),
+  putMobilePushSubscription: (subscription: MobilePushSubscriptionRequest, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean; device_id: string }>(appendProfileParam("/api/mobile/push/subscription", profile), {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(subscription),
+    }),
+  deleteMobilePushSubscription: (deviceId: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean }>(appendProfileParam(`/api/mobile/push/subscription/${encodeURIComponent(deviceId)}`, profile), { method: "DELETE" }),
   getMobileNotifications: (
     profile = getManagementProfile(),
     options: { includeDismissed?: boolean; limit?: number } = {},
@@ -1943,6 +1953,27 @@ export interface StatusResponse {
   latest_config_version: number;
   release_date: string;
   version: string;
+}
+
+export interface MobilePushCapability {
+  enabled: boolean;
+  public_key: string | null;
+  preview: false;
+}
+
+export interface MobilePushSubscriptionRequest {
+  device_id: string;
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+  categories: Array<"error" | "info" | "success" | "warning">;
+}
+
+export interface MobilePushSubscriptionSummary {
+  device_id: string;
+  categories: MobilePushSubscriptionRequest["categories"];
+  created_at: number;
+  last_seen_at: number;
+  failure_count: number;
 }
 
 export interface MobileNotification {

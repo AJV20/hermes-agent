@@ -108,29 +108,24 @@ self.addEventListener("fetch", (event) => {
 
 // Push payloads stay opaque. Detailed notification text requires an
 // authenticated foreground dashboard request; this worker never caches it.
-function safeMobileTarget(value) {
-  return typeof value === "string" && value.startsWith("/mobile") && !value.startsWith("//") && !value.includes("\\")
-    ? value : "/mobile/notifications";
-}
-
 self.addEventListener("push", (event) => {
-  let data = {};
-  try { data = event.data ? event.data.json() : {}; } catch (_) { /* malformed opaque message */ }
-  const category = ["info", "success", "warning", "error"].includes(data.category) ? data.category : "info";
   event.waitUntil(self.registration.showNotification("Hermes", {
     body: "Open Hermes to view this notification.",
-    tag: `hermes-${String(data.id || "notice").slice(0, 96)}`,
-    data: { target: "/mobile/notifications", category },
+    tag: "hermes-mobile-notification",
   }));
 });
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const target = safeMobileTarget(event.notification.data?.target);
+  const target = "/mobile/notifications";
   event.waitUntil((async () => {
     const absolute = new URL(target, self.registration.scope).toString();
     const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     const existing = clients.find((client) => client.url.startsWith(self.registration.scope));
-    return existing ? existing.focus() : self.clients.openWindow(absolute);
+    if (existing) {
+      await existing.navigate(absolute);
+      return existing.focus();
+    }
+    return self.clients.openWindow(absolute);
   })());
 });
