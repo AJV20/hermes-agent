@@ -581,7 +581,7 @@
 }
 .mobile-load-earlier {
   display: block;
-  min-height: 2.75rem;
+  min-height: 44px;
   margin: 0 auto 1rem;
   padding: 0.55rem 0.9rem;
   border: 1px solid var(--mobile-line);
@@ -784,7 +784,7 @@
   background: var(--mobile-panel);
   color: var(--mobile-text);
   font: inherit;
-  font-size: 1rem;
+  font-size: 16px;
   resize: none;
   outline: none;
 }
@@ -849,7 +849,7 @@
   background: color-mix(in srgb, var(--mobile-panel) 88%, transparent);
 }
 .mobile-session-filter button {
-  min-height: 2.75rem;
+  min-height: 44px;
   border: 0;
   border-radius: 0.7rem;
   background: transparent;
@@ -873,13 +873,13 @@
 }
 .mobile-search input {
   min-width: 0;
-  min-height: 2.75rem;
+  min-height: 44px;
   border: 0;
   outline: 0;
   background: transparent;
   color: var(--mobile-text);
   font: inherit;
-  font-size: 1rem;
+  font-size: 16px;
 }
 .mobile-search button,
 .mobile-load-more,
@@ -888,7 +888,7 @@
 .mobile-danger-button,
 .mobile-confirm-delete button,
 .mobile-task-actions button {
-  min-height: 2.75rem;
+  min-height: 44px;
   border: 0;
   border-radius: 0.8rem;
   font: inherit;
@@ -969,7 +969,7 @@
   gap: 0.2rem;
 }
 .mobile-task-filters button {
-  min-height: 2.75rem;
+  min-height: 44px;
   padding: 0 0.25rem;
   border: 0;
   border-radius: 0.65rem;
@@ -1011,7 +1011,7 @@
 }
 .mobile-attention-row button,
 .mobile-inline-error button {
-  min-height: 2.75rem;
+  min-height: 44px;
   padding: 0 0.7rem;
   border: 1px solid var(--mobile-line);
   border-radius: 0.7rem;
@@ -1103,7 +1103,7 @@
   background: var(--mobile-bg);
   color: var(--mobile-text);
   font: inherit;
-  font-size: 1rem;
+  font-size: 16px;
 }
 .mobile-primary-button {
   background: var(--mobile-accent);
@@ -1111,7 +1111,7 @@
 }
 .mobile-sheet-action {
   width: 100%;
-  min-height: 2.75rem;
+  min-height: 44px;
   margin-top: 0.6rem;
   border: 1px solid var(--mobile-line);
   border-radius: 0.8rem;
@@ -1161,7 +1161,7 @@
   line-height: 1.4;
 }
 .mobile-composer textarea {
-  font-size: 1rem;
+  font-size: 16px;
 }
 .mobile-action-card {
   margin: 0.5rem 0.75rem;
@@ -1182,7 +1182,7 @@
   border: 0;
 }
 .mobile-action-choice {
-  min-height: 2.75rem;
+  min-height: 44px;
   padding: 0.45rem 0.65rem;
   border: 1px solid var(--mobile-line);
   border-radius: 0.75rem;
@@ -1202,11 +1202,11 @@
   background: var(--mobile-bg);
   color: var(--mobile-text);
   font: inherit;
-  font-size: 1rem;
+  font-size: 16px;
   resize: vertical;
 }
 .mobile-action-card button {
-  min-height: 2.75rem;
+  min-height: 44px;
   padding: 0.5rem 0.8rem;
   border: 1px solid var(--mobile-line);
   border-radius: 0.75rem;
@@ -1223,7 +1223,7 @@
   gap: 0.45rem;
 }
 .mobile-action-card summary {
-  min-height: 2.75rem;
+  min-height: 44px;
   display: flex;
   align-items: center;
   cursor: pointer;
@@ -1541,7 +1541,7 @@
 .mobile-today-card a,
 .mobile-today-card button {
   min-width: 3rem;
-  min-height: 2.75rem;
+  min-height: 44px;
   padding: 0 0.7rem;
   border: 1px solid var(--mobile-line);
   border-radius: 0.75rem;
@@ -1556,7 +1556,7 @@
 }
 .mobile-secondary-actions { margin-top: 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .mobile-home-utilities { display: flex; justify-content: center; gap: 0.8rem; margin-top: 0.55rem; }
-.mobile-home-utilities a { min-height: 2.75rem; color: var(--mobile-muted); display: inline-flex; align-items: center; font-size: 0.7rem; text-decoration: none; }
+.mobile-home-utilities a { min-height: 44px; color: var(--mobile-muted); display: inline-flex; align-items: center; font-size: 0.7rem; text-decoration: none; }
 .mobile-text-large { font-size: 1.13rem; }
 .mobile-text-large .mobile-eyebrow { font-size: 0.72rem; }
 .mobile-density-compact .mobile-today-card { min-height: 4rem; padding: 0.58rem; }
@@ -1573,7 +1573,7 @@
 .mobile-preferences fieldset button,
 .mobile-preference-cards button,
 .mobile-preferences-reset {
-  min-height: 2.75rem;
+  min-height: 44px;
   border: 1px solid var(--mobile-line);
   border-radius: 0.7rem;
   background: var(--mobile-panel-strong);
@@ -1586,11 +1586,11 @@
 .mobile-preferences legend { grid-column: 1 / -1; margin-bottom: 0.25rem; color: var(--mobile-muted); font-size: 0.7rem; }
 .mobile-preferences fieldset button[aria-pressed='true'] { border-color: var(--mobile-accent); color: var(--mobile-accent); }
 .mobile-preference-cards { display: grid; gap: 0.35rem; margin-top: 0.8rem; }
-.mobile-preference-cards > div { min-height: 2.75rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.mobile-preference-cards > div { min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .mobile-preference-cards label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.74rem; }
 .mobile-preference-cards input { width: 1.1rem; height: 1.1rem; accent-color: var(--mobile-accent); }
 .mobile-preference-cards span { display: flex; gap: 0.25rem; }
-.mobile-preference-cards button { min-width: 2.75rem; padding: 0; }
+.mobile-preference-cards button { min-width: 44px; padding: 0; }
 .mobile-preferences-reset { width: 100%; margin-top: 0.8rem; color: var(--mobile-muted); }
 @media (max-width: 22rem) {
   .mobile-quick-grid {

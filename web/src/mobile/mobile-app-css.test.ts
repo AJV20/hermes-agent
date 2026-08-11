@@ -43,7 +43,7 @@ describe('mobile bottom navigation layout', () => {
   it('keeps the chat textarea at 16 CSS pixels so iOS does not focus-zoom the composer away from the keyboard', () => {
     const textarea = styles.match(/\.mobile-composer textarea\s*\{([^}]*)\}/)?.[1] ?? ''
 
-    expect(textarea).toContain('font-size: 1rem')
+    expect(textarea).toContain('font-size: 16px')
     expect(textarea).not.toContain('font-size: 0.82rem')
   })
 
@@ -53,6 +53,8 @@ describe('mobile bottom navigation layout', () => {
     const resumeButton = styles.match(/\.mobile-resume-card button\s*\{([^}]*)\}/)?.[1] ?? ''
     const roundAction = styles.match(/\.mobile-round-action\s*\{([^}]*)\}/)?.[1] ?? ''
     const attachmentRemove = styles.match(/\.mobile-attachment-chip button\s*\{([^}]*)\}/)?.[1] ?? ''
+    const todayAction = styles.match(/\.mobile-today-card a,\s*\.mobile-today-card button\s*\{([^}]*)\}/)?.[1] ?? ''
+    const homeUtility = styles.match(/\.mobile-home-utilities a\s*\{([^}]*)\}/)?.[1] ?? ''
 
     expect(iconButton).toContain('width: 3rem')
     expect(iconButton).toContain('height: 3rem')
@@ -62,6 +64,8 @@ describe('mobile bottom navigation layout', () => {
     expect(roundAction).toContain('height: 3rem')
     expect(attachmentRemove).toContain('width: 3rem')
     expect(attachmentRemove).toContain('height: 3rem')
+    expect(todayAction).toContain('min-height: 44px')
+    expect(homeUtility).toContain('min-height: 44px')
   })
 
   it('raises Jump to latest above the attachment composer row', () => {
@@ -87,7 +91,7 @@ describe('mobile bottom navigation layout', () => {
     expect(backdrop).toContain('justify-content: center')
     expect(sheet).toContain('padding-bottom: calc(1rem + var(--mobile-safe-bottom-capped))')
     expect(styles).toContain('.mobile-sheet-handle')
-    expect(searchInput).toContain('font-size: 1rem')
+    expect(searchInput).toContain('font-size: 16px')
   })
 
   it('keeps session visibility and action-sheet controls touch sized', () => {
@@ -96,8 +100,8 @@ describe('mobile bottom navigation layout', () => {
     const sheetAction = styles.match(/\.mobile-sheet-action\s*\{([^}]*)\}/)?.[1] ?? ''
 
     expect(filter).toContain('display: grid')
-    expect(filterButton).toContain('min-height: 2.75rem')
-    expect(sheetAction).toContain('min-height: 2.75rem')
+    expect(filterButton).toContain('min-height: 44px')
+    expect(sheetAction).toContain('min-height: 44px')
     expect(sheetAction).toContain('width: 100%')
   })
 
@@ -143,9 +147,9 @@ describe('mobile bottom navigation layout', () => {
     const textarea = styles.match(/\.mobile-action-card textarea\s*\{([^}]*)\}/)?.[1] ?? ''
 
     expect(card).toContain('padding: 1rem')
-    expect(buttons).toContain('min-height: 2.75rem')
-    expect(disclosure).toContain('min-height: 2.75rem')
-    expect(textarea).toContain('font-size: 1rem')
+    expect(buttons).toContain('min-height: 44px')
+    expect(disclosure).toContain('min-height: 44px')
+    expect(textarea).toContain('font-size: 16px')
     expect(command).toContain('overflow-x: auto')
     expect(command).toContain('white-space: pre-wrap')
   })
