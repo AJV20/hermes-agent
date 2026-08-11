@@ -69,7 +69,7 @@ def test_mobile_notifications_are_durable_deduplicated_and_profile_scoped(monkey
 def test_disabled_push_server_does_not_backlog_notification_api_deliveries(monkeypatch, tmp_path):
     client, default_home, _profiles = _client_for_homes(monkeypatch, tmp_path)
     monkeypatch.setattr(web_server, "_get_mobile_push_public_key", lambda: "B" * 87)
-    monkeypatch.setattr(mobile_push, "is_transport_available", lambda: True)
+    monkeypatch.setattr(web_server, "_mobile_push_delivery_ready", lambda: True)
     subscribed = client.put(
         "/api/mobile/push/subscription",
         json={
@@ -82,10 +82,39 @@ def test_disabled_push_server_does_not_backlog_notification_api_deliveries(monke
     )
     assert subscribed.status_code == 200
     monkeypatch.setattr(web_server, "load_config", lambda: {"mobile": {"push": {"enabled": False}}})
+    monkeypatch.setattr(web_server, "_mobile_push_delivery_ready", lambda: False)
 
     created = client.post(
         "/api/mobile/notifications",
         json={"body": "Saved only in the inbox", "level": "warning", "title": "Disabled", "type": "warning"},
+        headers=_headers(),
+    )
+
+    assert created.status_code == 200
+    with sqlite3.connect(default_home / "mobile_notifications.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM mobile_push_deliveries").fetchone()[0] == 0
+
+
+def test_enabled_config_without_transport_or_identity_does_not_backlog(monkeypatch, tmp_path):
+    client, default_home, _profiles = _client_for_homes(monkeypatch, tmp_path)
+    monkeypatch.setattr(web_server, "_get_mobile_push_public_key", lambda: "B" * 87)
+    monkeypatch.setattr(web_server, "_mobile_push_delivery_ready", lambda: True)
+    subscribed = client.put(
+        "/api/mobile/push/subscription",
+        json={
+            "device_id": "unavailable-device",
+            "endpoint": "https://fcm.googleapis.com/subscription/unavailable",
+            "keys": {"p256dh": "A" * 87, "auth": "C" * 22},
+            "categories": ["warning"],
+        },
+        headers=_headers(),
+    )
+    assert subscribed.status_code == 200
+    monkeypatch.setattr(web_server, "_mobile_push_delivery_ready", lambda: False)
+
+    created = client.post(
+        "/api/mobile/notifications",
+        json={"body": "Inbox only", "level": "warning", "title": "Unavailable", "type": "warning"},
         headers=_headers(),
     )
 
@@ -150,7 +179,7 @@ def test_mobile_push_capability_and_subscription_are_authenticated_no_store_and_
     client, default_home, profiles = _client_for_homes(monkeypatch, tmp_path)
     monkeypatch.setattr(web_server, "_get_mobile_push_public_key", lambda: "B" * 87)
     monkeypatch.setattr(web_server, "load_config", lambda: {"mobile": {"push": {"enabled": True}}})
-    monkeypatch.setattr(mobile_push, "is_transport_available", lambda: True)
+    monkeypatch.setattr(web_server, "_mobile_push_delivery_ready", lambda: True)
     payload = {
         "device_id": "device-opaque-123",
         "endpoint": "https://fcm.googleapis.com/subscription/abc",
@@ -190,6 +219,7 @@ def test_web_worker_uses_one_active_home_vapid_identity_for_profile_local_queue(
     kicked = []
     monkeypatch.setattr(web_server, "get_hermes_home", lambda: active_home)
     monkeypatch.setattr(web_server, "load_config", lambda: {"mobile": {"push": {"enabled": True}}})
+    monkeypatch.setattr(web_server, "_mobile_push_delivery_ready", lambda: True)
     monkeypatch.setattr(mobile_push, "make_pywebpush_sender", lambda _getter, *, home, subject: senders.append((home, subject)) or object())
     monkeypatch.setattr(mobile_push, "kick_delivery_worker", lambda home, *, send: kicked.append((home, send)))
 
@@ -203,7 +233,7 @@ def test_mobile_push_is_config_gated_and_disabled_by_default(monkeypatch, tmp_pa
     client, _default_home, _profiles = _client_for_homes(monkeypatch, tmp_path)
     monkeypatch.setattr(web_server, "_get_mobile_push_public_key", lambda: "B" * 87)
     monkeypatch.setattr(web_server, "load_config", lambda: DEFAULT_CONFIG)
-    monkeypatch.setattr(mobile_push, "is_transport_available", lambda: True)
+    monkeypatch.setattr(web_server, "_mobile_push_delivery_ready", lambda: False)
 
     capability = client.get("/api/mobile/push/capability", headers=_headers())
 
@@ -214,7 +244,7 @@ def test_mobile_push_is_config_gated_and_disabled_by_default(monkeypatch, tmp_pa
 def test_mobile_push_capability_is_disabled_when_the_optional_transport_is_absent(monkeypatch, tmp_path):
     client, _default_home, _profiles = _client_for_homes(monkeypatch, tmp_path)
     monkeypatch.setattr(web_server, "_get_mobile_push_public_key", lambda: "B" * 87)
-    monkeypatch.setattr(mobile_push, "is_transport_available", lambda: False)
+    monkeypatch.setattr(web_server, "_mobile_push_delivery_ready", lambda: False)
     payload = {
         "device_id": "device-opaque-123",
         "endpoint": "https://fcm.googleapis.com/subscription/abc",
@@ -232,7 +262,7 @@ def test_mobile_push_capability_is_disabled_when_the_optional_transport_is_absen
 def test_mobile_push_rejects_malformed_origins_and_noncanonical_keys(monkeypatch, tmp_path):
     client, _default_home, _profiles = _client_for_homes(monkeypatch, tmp_path)
     monkeypatch.setattr(web_server, "_get_mobile_push_public_key", lambda: "B" * 87)
-    monkeypatch.setattr(mobile_push, "is_transport_available", lambda: True)
+    monkeypatch.setattr(web_server, "_mobile_push_delivery_ready", lambda: True)
     base = {
         "device_id": "device-opaque-123",
         "endpoint": "https://fcm.googleapis.com/subscription/abc",

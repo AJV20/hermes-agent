@@ -174,6 +174,17 @@ def _mobile_push_server_enabled() -> bool:
     return push_settings(load_config())[0]
 
 
+def _mobile_push_delivery_ready() -> bool:
+    if not _mobile_push_server_enabled():
+        return False
+    from hermes_cli.mobile_push import is_delivery_ready
+    return is_delivery_ready(
+        _scoped_get_secret,
+        home=get_hermes_home(),
+        subject=_mobile_push_vapid_subject(),
+    )
+
+
 def _mobile_push_vapid_subject() -> str:
     from hermes_cli.mobile_push import push_settings
     return push_settings(load_config())[1]
@@ -197,7 +208,7 @@ def _kick_mobile_push_delivery(home: Path) -> None:
     try:
         from hermes_cli.mobile_push import kick_delivery_worker, make_pywebpush_sender
 
-        if not _mobile_push_server_enabled():
+        if not _mobile_push_delivery_ready():
             return
         sender = make_pywebpush_sender(
             _scoped_get_secret,
@@ -17830,8 +17841,7 @@ async def get_mobile_push_capability(request: Request, response: Response, profi
     _require_token(request)
     _mobile_notification_headers(response)
     public_key = _get_mobile_push_public_key()
-    from hermes_cli.mobile_push import is_transport_available
-    enabled = _mobile_push_server_enabled() and bool(public_key) and is_transport_available()
+    enabled = _mobile_push_delivery_ready() and bool(public_key)
     return {"enabled": enabled, "public_key": public_key if enabled else None, "preview": False}
 
 
@@ -17855,8 +17865,7 @@ async def put_mobile_push_subscription(
 ):
     _require_token(request)
     _mobile_notification_headers(response)
-    from hermes_cli.mobile_push import is_transport_available
-    if not _mobile_push_server_enabled() or not _get_mobile_push_public_key() or not is_transport_available():
+    if not _mobile_push_delivery_ready() or not _get_mobile_push_public_key():
         raise HTTPException(status_code=409, detail="Web Push is not configured")
     from hermes_cli.mobile_push import upsert_subscription
     _profile, home = _mobile_notification_home(profile)
@@ -17942,7 +17951,7 @@ async def post_mobile_notification(
         home,
         body=body.body,
         dedupe_key=body.dedupe_key,
-        enqueue_push=_mobile_push_server_enabled(),
+        enqueue_push=_mobile_push_delivery_ready(),
         level=body.level,
         profile=profile_name,
         session_id=body.session_id,

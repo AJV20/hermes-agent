@@ -1,3 +1,5 @@
+import sqlite3
+
 from hermes_cli import mobile_push
 from hermes_cli.mobile_notifications import list_notifications
 from tui_gateway import server
@@ -51,6 +53,7 @@ def test_gateway_uses_one_active_home_vapid_identity_for_profile_local_queue(mon
     kicked = []
     monkeypatch.setattr(server, "_hermes_home", active_home)
     monkeypatch.setattr(server, "write_json", lambda _frame: None)
+    monkeypatch.setattr(mobile_push, "is_delivery_ready", lambda _getter, *, home, subject: True)
     monkeypatch.setattr(mobile_push, "make_pywebpush_sender", lambda _getter, *, home, subject: senders.append((home, subject)) or object())
     monkeypatch.setattr(mobile_push, "kick_delivery_worker", lambda home, *, send: kicked.append((home, send)))
     with server._sessions_lock:
@@ -66,3 +69,36 @@ def test_gateway_uses_one_active_home_vapid_identity_for_profile_local_queue(mon
 
     assert senders == [(active_home, "mailto:test@example.test")]
     assert kicked and kicked[0][0] == profile_home
+
+
+def test_gateway_does_not_queue_when_transport_or_vapid_identity_is_unusable(monkeypatch, tmp_path):
+    active_home = tmp_path / "active"
+    profile_home = tmp_path / "profile"
+    active_home.mkdir()
+    profile_home.mkdir()
+    (active_home / "config.yaml").write_text("mobile:\n  push:\n    enabled: true\n")
+    monkeypatch.setattr(server, "_hermes_home", active_home)
+    monkeypatch.setattr(server, "write_json", lambda _frame: None)
+    monkeypatch.setattr(mobile_push, "_resolve_host_addresses", lambda _host: ["142.250.72.202"])
+    monkeypatch.setattr(mobile_push, "is_delivery_ready", lambda _getter, *, home, subject: False)
+    mobile_push.upsert_subscription(
+        profile_home,
+        device_id="disableddevice123",
+        endpoint="https://fcm.googleapis.com/push/unavailable",
+        p256dh="A" * 87,
+        auth="B" * 22,
+        categories=["info"],
+    )
+    with server._sessions_lock:
+        server._sessions["runtime-disabled-push"] = {
+            "profile_home": str(profile_home),
+            "session_key": "session",
+        }
+    try:
+        server._emit("notification.show", "runtime-disabled-push", {"key": "disabled-event", "text": "Saved only"})
+    finally:
+        with server._sessions_lock:
+            server._sessions.pop("runtime-disabled-push", None)
+
+    with sqlite3.connect(profile_home / "mobile_notifications.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM mobile_push_deliveries").fetchone()[0] == 0

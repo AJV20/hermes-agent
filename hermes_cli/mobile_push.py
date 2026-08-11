@@ -110,6 +110,41 @@ def is_transport_available() -> bool:
     return webpush is not None
 
 
+def is_delivery_ready(
+    secret_getter: Callable[[str, str | None], str | None],
+    *,
+    home: Path,
+    subject: str = "mailto:admin@localhost",
+) -> bool:
+    """Return whether the exact active-home VAPID identity can deliver now."""
+    if webpush is None:
+        return False
+    private_key = secret_getter("HERMES_MOBILE_WEB_PUSH_VAPID_PRIVATE_KEY", None) or _read_vapid_private_key(home)
+    public_key = secret_getter("HERMES_MOBILE_WEB_PUSH_VAPID_PUBLIC_KEY", None) or read_vapid_public_key(home)
+    if not private_key or not public_key:
+        return False
+    try:
+        import base64
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        parsed = serialization.load_pem_private_key(private_key.encode("ascii"), password=None)
+        if not isinstance(parsed, ec.EllipticCurvePrivateKey) or not isinstance(parsed.curve, ec.SECP256R1):
+            return False
+        derived = base64.urlsafe_b64encode(parsed.public_key().public_bytes(
+            serialization.Encoding.X962,
+            serialization.PublicFormat.UncompressedPoint,
+        )).rstrip(b"=").decode("ascii")
+        parsed_subject = urlparse(subject)
+        subject_valid = (
+            (parsed_subject.scheme == "mailto" and bool(parsed_subject.path))
+            or (parsed_subject.scheme == "https" and bool(parsed_subject.hostname))
+        )
+        return subject_valid and secrets.compare_digest(derived, public_key)
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return False
+
+
 def ensure_vapid_keypair(home: Path) -> str:
     """Create or load the active Hermes home's VAPID keypair with a 0600 private key."""
     import base64
