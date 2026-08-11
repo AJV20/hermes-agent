@@ -30,9 +30,24 @@ export type MobilePendingAction = MobileApprovalAction | MobileClarifyAction | M
 
 export interface MobileActionState {
   pending: MobilePendingAction | null
+  queued: MobilePendingAction[]
 }
 
-export const EMPTY_MOBILE_ACTIONS: MobileActionState = { pending: null }
+export const EMPTY_MOBILE_ACTIONS: MobileActionState = { pending: null, queued: [] }
+
+function enqueueMobileAction(state: MobileActionState, action: MobilePendingAction): MobileActionState {
+  return state.pending
+    ? { ...state, queued: [...state.queued, action] }
+    : { pending: action, queued: [] }
+}
+
+export function completeMobileAction(
+  state: MobileActionState,
+  expected: MobilePendingAction | null
+): MobileActionState {
+  if (!expected || state.pending !== expected) return state
+  return { pending: state.queued[0] ?? null, queued: state.queued.slice(1) }
+}
 
 function record(payload: unknown): Record<string, unknown> {
   return payload && typeof payload === 'object' ? payload as Record<string, unknown> : {}
@@ -57,12 +72,12 @@ function approvalChoices(payload: Record<string, unknown>): MobileApprovalChoice
 }
 
 export function hydrateMobileActionResume(
-  state: MobileActionState,
+  _state: MobileActionState,
   snapshot: { pending_prompt?: { payload?: unknown; type?: string } | null; session_id: string }
 ): MobileActionState {
   const pending = snapshot.pending_prompt
-  if (!pending?.type) return { pending: null }
-  return applyMobileActionEvent(state, {
+  if (!pending?.type) return EMPTY_MOBILE_ACTIONS
+  return applyMobileActionEvent(EMPTY_MOBILE_ACTIONS, {
     payload: pending.payload,
     session_id: snapshot.session_id,
     type: pending.type
@@ -81,43 +96,46 @@ export function applyMobileActionEvent(
     const requestId = typeof payload.request_id === 'string' ? payload.request_id : ''
     const question = typeof payload.question === 'string' ? payload.question.trim() : ''
     if (!requestId || !question) return state
-    return {
-      pending: {
-        kind: 'clarify',
-        requestId,
-        question,
-        choices: strings(payload.choices),
-        multiSelect: payload.multi_select === true,
-        status: 'waiting'
-      }
-    }
+    return enqueueMobileAction(state, {
+      kind: 'clarify',
+      requestId,
+      question,
+      choices: strings(payload.choices),
+      multiSelect: payload.multi_select === true,
+      status: 'waiting'
+    })
   }
 
   if (event.type === 'clarify.expire') {
     const requestId = typeof payload.request_id === 'string' ? payload.request_id : ''
-    if (state.pending?.kind !== 'clarify' || state.pending.requestId !== requestId) return state
-    return { pending: { ...state.pending, status: 'expired' } }
+    if (state.pending?.kind === 'clarify' && state.pending.requestId === requestId) {
+      return { ...state, pending: { ...state.pending, status: 'expired' } }
+    }
+    return {
+      ...state,
+      queued: state.queued.map(action => action.kind === 'clarify' && action.requestId === requestId
+        ? { ...action, status: 'expired' }
+        : action)
+    }
   }
 
   if (event.type === 'approval.request') {
     const sessionId = event.session_id || runtimeSessionId || ''
     if (!sessionId) return state
     const choices = approvalChoices(payload)
-    return {
-      pending: {
-        kind: 'approval',
-        allowPermanent: payload.allow_permanent !== false && choices.includes('always'),
-        choices,
-        command: typeof payload.command === 'string' ? payload.command : '',
-        description: typeof payload.description === 'string' ? payload.description : '',
-        sessionId,
-        status: 'waiting'
-      }
-    }
+    return enqueueMobileAction(state, {
+      kind: 'approval',
+      allowPermanent: payload.allow_permanent !== false && choices.includes('always'),
+      choices,
+      command: typeof payload.command === 'string' ? payload.command : '',
+      description: typeof payload.description === 'string' ? payload.description : '',
+      sessionId,
+      status: 'waiting'
+    })
   }
 
   if (event.type === 'secret.request' || event.type === 'sudo.request' || event.type === 'sensitive.request') {
-    return { pending: { kind: 'sensitive', status: 'unsupported' } }
+    return enqueueMobileAction(state, { kind: 'sensitive', status: 'unsupported' })
   }
 
   return state

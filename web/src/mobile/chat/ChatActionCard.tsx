@@ -17,9 +17,11 @@ export function ChatActionCard({
   const [confirmAlways, setConfirmAlways] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const submittingRef = useRef(false)
+  const latestActionRef = useRef(action)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    latestActionRef.current = action
     // eslint-disable-next-line react-hooks/set-state-in-effect -- a new server action must reset all response controls atomically
     setSelected([])
     setFreeform('')
@@ -35,12 +37,14 @@ export function ChatActionCard({
 
   const respond = async (response: ClarifyResponse | ApprovalResponse) => {
     if (submittingRef.current) return
+    const submittedAction = action
     submittingRef.current = true
     setSubmitting(true)
     setError(null)
     try {
       await onRespond(response)
     } catch (reason) {
+      if (latestActionRef.current !== submittedAction) return
       submittingRef.current = false
       setError(reason instanceof Error ? reason.message : 'Could not send your response. Try again.')
       setSubmitting(false)

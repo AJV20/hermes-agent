@@ -21,7 +21,9 @@ afterEach(async () => {
   container.remove()
 })
 
-async function render(action: MobilePendingAction, respond = vi.fn(async () => {})) {
+type ActionRespond = Parameters<typeof ChatActionCard>[0]['onRespond']
+
+async function render(action: MobilePendingAction, respond: ActionRespond = vi.fn(async () => {})) {
   await act(async () => {
     root.render(<ChatActionCard action={action} onRespond={respond} />)
   })
@@ -88,6 +90,38 @@ describe('ChatActionCard', () => {
     await act(async () => { reject(new Error('offline')); await Promise.resolve() })
     expect(container.textContent).toContain('offline')
     expect((container.querySelector('button[aria-label="Continue clarification"]') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('ignores a late failure from a superseded action while the current response is pending', async () => {
+    let rejectFirst!: (reason: Error) => void
+    const firstPending = new Promise<void>((_resolve, reject) => { rejectFirst = reject })
+    let resolveSecond!: () => void
+    const secondPending = new Promise<void>(resolve => { resolveSecond = resolve })
+    const respond = vi.fn((response: { kind: string }) => response.kind === 'clarify' ? firstPending : secondPending)
+    await render({
+      choices: [], kind: 'clarify', multiSelect: false,
+      question: 'First?', requestId: 'clarify-old', status: 'waiting'
+    }, respond)
+    const input = container.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      setter?.call(input, 'First answer')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      ;(container.querySelector('button[aria-label="Continue clarification"]') as HTMLButtonElement).click()
+    })
+
+    await render({
+      allowPermanent: false, choices: ['once', 'deny'], command: 'command B',
+      description: 'Second', kind: 'approval', sessionId: 'runtime-1', status: 'waiting'
+    }, respond)
+    const runOnce = container.querySelector('button[aria-label="Run once"]') as HTMLButtonElement
+    await act(async () => runOnce.click())
+    expect(runOnce.disabled).toBe(true)
+
+    await act(async () => { rejectFirst(new Error('late A failure')); await Promise.resolve() })
+    expect((container.querySelector('button[aria-label="Run once"]') as HTMLButtonElement).disabled).toBe(true)
+    expect(respond).toHaveBeenCalledTimes(2)
+    await act(async () => { resolveSecond(); await secondPending })
   })
 
   it('retains expired choices but only offers composer follow-up', async () => {

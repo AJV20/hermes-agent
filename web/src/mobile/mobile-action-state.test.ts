@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { applyMobileActionEvent, EMPTY_MOBILE_ACTIONS } from './mobile-action-state'
+import { applyMobileActionEvent, completeMobileAction, EMPTY_MOBILE_ACTIONS } from './mobile-action-state'
 
 describe('mobile action projection', () => {
   it('creates and expires a scoped clarify card without losing its choices', () => {
@@ -81,6 +81,25 @@ describe('mobile action projection', () => {
       kind: 'approval',
       allowPermanent: false,
       choices: ['once', 'deny']
+    })
+  })
+
+  it('serializes same-session approvals in the backend FIFO order', () => {
+    const first = applyMobileActionEvent(EMPTY_MOBILE_ACTIONS, {
+      session_id: 'runtime-1',
+      type: 'approval.request',
+      payload: { command: 'command A', choices: ['once', 'deny'] }
+    }, 'runtime-1')
+    const queued = applyMobileActionEvent(first, {
+      session_id: 'runtime-1',
+      type: 'approval.request',
+      payload: { command: 'command B', choices: ['once', 'deny'] }
+    }, 'runtime-1')
+
+    expect(queued.pending).toMatchObject({ kind: 'approval', command: 'command A' })
+    expect(queued.queued).toHaveLength(1)
+    expect(completeMobileAction(queued, queued.pending).pending).toMatchObject({
+      kind: 'approval', command: 'command B'
     })
   })
 

@@ -14,6 +14,7 @@ import {
 } from '../mobile-chat-state'
 import {
   applyMobileActionEvent,
+  completeMobileAction,
   EMPTY_MOBILE_ACTIONS,
   hydrateMobileActionResume,
   type MobileActionState
@@ -107,6 +108,23 @@ export function ChatScreen({
     historyHydratedRef.current = false
     let reconnectAttempt = 0
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    const bufferedGatewayEvents: GatewayEvent[] = []
+
+    const applyScopedGatewayEvent = (event: GatewayEvent) => {
+      if (event.type === 'message.complete' || event.type === 'error') submitInFlight.current = false
+      setActions(current => applyMobileActionEvent(current, event, runtimeId.current))
+      setChat(current => applyMobileGatewayEvent(current, event))
+    }
+
+    const handleGatewayEvent = (event: GatewayEvent) => {
+      if (event.profile && event.profile !== profile) return
+      if (event.session_id && !runtimeId.current && !isNew) {
+        bufferedGatewayEvents.push(event)
+        return
+      }
+      if (event.session_id && event.session_id !== runtimeId.current) return
+      applyScopedGatewayEvent(event)
+    }
 
     const hydrateResumableSession = async (resumableId: string) => {
       const [storedResult, resumed] = await Promise.all([
@@ -127,6 +145,9 @@ export function ChatScreen({
       if (cancelled) return
       runtimeId.current = resumed.session_id
       setActions(current => hydrateMobileActionResume(current, resumed))
+      bufferedGatewayEvents.splice(0).forEach(event => {
+        if (!event.session_id || event.session_id === resumed.session_id) applyScopedGatewayEvent(event)
+      })
       if (storedResult.ok === true) {
         const returned = storedResult.stored.pagination?.returned ?? storedResult.stored.messages.length
         const limit = storedResult.stored.pagination?.limit ?? 500
@@ -170,13 +191,7 @@ export function ChatScreen({
     }
 
     const disposers = [
-      gateway.onAny((event: GatewayEvent) => {
-        if (event.profile && event.profile !== profile) return
-        if (event.session_id && event.session_id !== runtimeId.current) return
-        if (event.type === 'message.complete' || event.type === 'error') submitInFlight.current = false
-        setActions(current => applyMobileActionEvent(current, event, runtimeId.current))
-        setChat(current => applyMobileGatewayEvent(current, event))
-      }),
+      gateway.onAny(handleGatewayEvent),
       gateway.onState(state => {
         const isOpen = state === 'open'
         setConnected(isOpen)
@@ -536,7 +551,7 @@ export function ChatScreen({
     } else {
       await gateway.request('approval.respond', { choice: response.choice, session_id: response.sessionId })
     }
-    setActions(current => current.pending === respondedAction ? EMPTY_MOBILE_ACTIONS : current)
+    setActions(current => completeMobileAction(current, respondedAction))
   }, [actions.pending, gateway])
 
   const stopResponse = useCallback(async () => {

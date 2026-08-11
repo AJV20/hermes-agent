@@ -1500,7 +1500,28 @@ describe('MobileApp', () => {
     expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(1)
   })
 
-  it('keeps a newer action visible when an older response finishes', async () => {
+  it('replays a session action that arrives while session resume is still resolving', async () => {
+    let finishResume!: (value: { session_id: string }) => void
+    const pendingResume = new Promise<{ session_id: string }>(resolve => { finishResume = resolve })
+    gatewayMocks.request.mockImplementation((method: string) => method === 'session.resume' ? pendingResume : Promise.resolve({}))
+    await renderAt('/mobile/chat/session-1')
+
+    await act(async () => gatewayMocks.eventHandler?.({
+      payload: { choices: ['once', 'deny'], command: 'buffered command' },
+      session_id: 'runtime-buffered',
+      type: 'approval.request'
+    }))
+    expect(container.querySelector('[aria-label="Command approval needed"]')).toBeNull()
+
+    await act(async () => {
+      finishResume({ session_id: 'runtime-buffered' })
+      await pendingResume
+    })
+    expect(container.querySelector('[aria-label="Command approval needed"]')).not.toBeNull()
+    expect(container.textContent).toContain('buffered command')
+  })
+
+  it('answers queued actions in the same FIFO order the backend resolves them', async () => {
     let finishFirstResponse!: () => void
     const firstResponse = new Promise<void>(resolve => { finishFirstResponse = resolve })
     gatewayMocks.request.mockImplementation((method: string) => {
@@ -1527,13 +1548,16 @@ describe('MobileApp', () => {
       session_id: 'runtime-actions',
       type: 'approval.request'
     }))
-    expect(container.querySelector('[aria-label="Command approval needed"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="Clarification needed"]')).not.toBeNull()
+    expect(container.textContent).toContain('First question?')
+    expect(container.querySelector('[aria-label="Command approval needed"]')).toBeNull()
 
     await act(async () => {
       finishFirstResponse()
       await firstResponse
     })
     expect(container.querySelector('[aria-label="Command approval needed"]')).not.toBeNull()
+    expect(container.textContent).toContain('echo newer')
   })
 
   it('recovers from a malformed encoded chat URL', async () => {
