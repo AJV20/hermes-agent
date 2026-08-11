@@ -14,6 +14,18 @@ declare global {
 const HERMES_PWA_UPDATE_READY_EVENT = 'hermes-pwa-update-ready'
 const HERMES_PWA_UPDATE_ACCEPTED_EVENT = 'hermes-pwa-update-accepted'
 
+export type MobilePushSupport = 'ready' | 'unsupported' | 'denied' | 'insecure' | 'ios-install'
+
+/** Conservative browser gate used by Mobile settings before requesting consent. */
+export function getMobilePushSupport(): MobilePushSupport {
+  if (typeof window === 'undefined' || !window.isSecureContext) return 'insecure'
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return 'unsupported'
+  if (Notification.permission === 'denied') return 'denied'
+  const standalone = window.matchMedia?.('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone
+  const ios = /iPad|iPhone|iPod/.test(navigator.userAgent)
+  return ios && !standalone ? 'ios-install' : 'ready'
+}
+
 function normalizeBasePath(raw: string | undefined): string {
   if (!raw) return ''
   const withLead = raw.startsWith('/') ? raw : `/${raw}`

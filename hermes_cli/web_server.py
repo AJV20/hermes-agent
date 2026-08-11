@@ -99,6 +99,7 @@ from gateway.status import (
     resolve_gateway_liveness,
 )
 from utils import env_var_enabled
+from agent.secret_scope import get_secret as _scoped_get_secret
 
 try:
     from fastapi import (
@@ -17697,8 +17698,112 @@ def _mobile_notification_home(profile: Optional[str]) -> tuple[str, Path]:
     return requested, _resolve_profile_dir(requested)
 
 
+_MOBILE_PUSH_CATEGORIES = frozenset({"info", "success", "warning", "error"})
+_MOBILE_PUSH_B64URL = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _get_mobile_push_public_key() -> Optional[str]:
+    """Read only the origin-wide public VAPID identity through secret routing.
+
+    The private key is intentionally neither read nor returned by dashboard
+    code. A deployment sender may retrieve it independently in its scoped
+    execution context.
+    """
+    value = _scoped_get_secret("HERMES_MOBILE_WEB_PUSH_VAPID_PUBLIC_KEY", None)
+    if not isinstance(value, str) or not _MOBILE_PUSH_B64URL.fullmatch(value) or not 80 <= len(value) <= 128:
+        return None
+    return value
+
+
+class _MobilePushSubscriptionBody(BaseModel):
+    device_id: str
+    endpoint: str
+    keys: dict[str, str]
+    categories: list[str]
+
+    @field_validator("device_id")
+    @classmethod
+    def _device_id(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{12,128}", value):
+            raise ValueError("device id is invalid")
+        return value
+
+    @field_validator("endpoint")
+    @classmethod
+    def _endpoint(cls, value: str) -> str:
+        from urllib.parse import urlparse
+        parsed = urlparse(value)
+        if parsed.scheme != "https" or not parsed.netloc or len(value) > 2048:
+            raise ValueError("push endpoint must use HTTPS")
+        return value
+
+    @field_validator("keys")
+    @classmethod
+    def _keys(cls, value: dict[str, str]) -> dict[str, str]:
+        p256dh, auth = value.get("p256dh"), value.get("auth")
+        if (not isinstance(p256dh, str) or not _MOBILE_PUSH_B64URL.fullmatch(p256dh) or not 80 <= len(p256dh) <= 128
+                or not isinstance(auth, str) or not _MOBILE_PUSH_B64URL.fullmatch(auth) or not 16 <= len(auth) <= 64):
+            raise ValueError("push encryption keys are invalid")
+        return {"p256dh": p256dh, "auth": auth}
+
+    @field_validator("categories")
+    @classmethod
+    def _categories(cls, value: list[str]) -> list[str]:
+        if not value or len(value) > len(_MOBILE_PUSH_CATEGORIES) or any(item not in _MOBILE_PUSH_CATEGORIES for item in value):
+            raise ValueError("push categories are invalid")
+        return sorted(set(value))
+
+
 def _mobile_notification_headers(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store"
+
+
+@app.get("/api/mobile/push/capability")
+async def get_mobile_push_capability(request: Request, response: Response):
+    _require_token(request)
+    _mobile_notification_headers(response)
+    public_key = _get_mobile_push_public_key()
+    return {"enabled": bool(public_key), "public_key": public_key, "preview": False}
+
+
+@app.get("/api/mobile/push/subscription")
+async def get_mobile_push_subscriptions(request: Request, response: Response, profile: Optional[str] = None):
+    _require_token(request)
+    _mobile_notification_headers(response)
+    from hermes_cli.mobile_push import list_subscriptions
+    _profile, home = _mobile_notification_home(profile)
+    return {"items": await asyncio.to_thread(list_subscriptions, home)}
+
+
+@app.put("/api/mobile/push/subscription")
+async def put_mobile_push_subscription(
+    request: Request, response: Response, body: _MobilePushSubscriptionBody, profile: Optional[str] = None
+):
+    _require_token(request)
+    _mobile_notification_headers(response)
+    if not _get_mobile_push_public_key():
+        raise HTTPException(status_code=409, detail="Web Push is not configured")
+    from hermes_cli.mobile_push import upsert_subscription
+    _profile, home = _mobile_notification_home(profile)
+    await asyncio.to_thread(upsert_subscription, home, device_id=body.device_id, endpoint=body.endpoint,
+                            p256dh=body.keys["p256dh"], auth=body.keys["auth"], categories=body.categories)
+    return {"ok": True, "device_id": body.device_id}
+
+
+@app.delete("/api/mobile/push/subscription/{device_id}")
+async def delete_mobile_push_subscription(
+    device_id: str, request: Request, response: Response, profile: Optional[str] = None
+):
+    _require_token(request)
+    _mobile_notification_headers(response)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{12,128}", device_id):
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    from hermes_cli.mobile_push import remove_subscription
+    _profile, home = _mobile_notification_home(profile)
+    if not await asyncio.to_thread(remove_subscription, home, device_id=device_id):
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    return {"ok": True}
 
 
 def _mobile_notification_session_exists(profile: Optional[str], session_id: Optional[str]) -> bool:

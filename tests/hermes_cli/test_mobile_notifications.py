@@ -111,3 +111,43 @@ def test_mobile_notifications_reject_unsafe_content_and_targets(monkeypatch, tmp
     assert unsafe_title.status_code == 422
     assert unsafe_target.status_code == 422
     assert oversized_title.status_code == 422
+
+
+def test_mobile_push_capability_and_subscription_are_authenticated_no_store_and_profile_scoped(monkeypatch, tmp_path):
+    client, default_home, profiles = _client_for_homes(monkeypatch, tmp_path)
+    monkeypatch.setattr(web_server, "_get_mobile_push_public_key", lambda: "B" * 87)
+    payload = {
+        "device_id": "device-opaque-123",
+        "endpoint": "https://push.example.test/subscription/abc",
+        "keys": {"p256dh": "A" * 87, "auth": "C" * 22},
+        "categories": ["warning", "error"],
+    }
+
+    unauthenticated = client.get("/api/mobile/push/capability")
+    capability = client.get("/api/mobile/push/capability", headers=_headers())
+    created = client.put("/api/mobile/push/subscription", json=payload, headers=_headers())
+    other = client.get("/api/mobile/push/subscription", params={"profile": "other"}, headers=_headers())
+    listed = client.get("/api/mobile/push/subscription", headers=_headers())
+
+    assert unauthenticated.status_code == 401
+    assert capability.status_code == 200
+    assert capability.headers["cache-control"] == "no-store"
+    assert capability.json() == {"enabled": True, "public_key": "B" * 87, "preview": False}
+    assert created.status_code == 200
+    assert created.headers["cache-control"] == "no-store"
+    assert listed.json()["items"][0]["device_id"] == payload["device_id"]
+    assert other.json() == {"items": []}
+    assert (default_home / "mobile_push.db").exists()
+    assert (profiles["other"] / "mobile_push.db").exists()
+
+
+def test_mobile_push_rejects_non_https_subscription_and_disables_without_public_key(monkeypatch, tmp_path):
+    client, _default_home, _profiles = _client_for_homes(monkeypatch, tmp_path)
+    monkeypatch.setattr(web_server, "_get_mobile_push_public_key", lambda: None)
+    disabled = client.get("/api/mobile/push/capability", headers=_headers())
+    invalid = client.put("/api/mobile/push/subscription", json={
+        "device_id": "device-opaque-123", "endpoint": "http://push.example.test/a",
+        "keys": {"p256dh": "A" * 87, "auth": "C" * 22}, "categories": ["warning"],
+    }, headers=_headers())
+    assert disabled.json() == {"enabled": False, "public_key": None, "preview": False}
+    assert invalid.status_code == 422
