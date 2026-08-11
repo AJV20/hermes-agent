@@ -43,4 +43,13 @@ describe('mobile preferences', () => {
 
     expect(loadMobilePreferences('default', localStorage)).toEqual(DEFAULT_MOBILE_PREFERENCES)
   })
+
+  it('does not crash the mobile shell when browser storage rejects a write', () => {
+    const blockedStorage = {
+      getItem: () => null,
+      setItem: () => { throw new DOMException('blocked', 'SecurityError') }
+    }
+
+    expect(() => saveMobilePreferences('default', DEFAULT_MOBILE_PREFERENCES, blockedStorage)).not.toThrow()
+  })
 })

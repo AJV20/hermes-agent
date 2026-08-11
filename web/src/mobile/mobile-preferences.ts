@@ -61,5 +61,10 @@ export function loadMobilePreferences(profile: string, storage = browserStorage(
 
 export function saveMobilePreferences(profile: string, preferences: MobilePreferences, storage = browserStorage()) {
   if (!storage || !isPreferences(preferences)) return
-  storage.setItem(keyForProfile(profile), JSON.stringify(preferences))
+  try {
+    storage.setItem(keyForProfile(profile), JSON.stringify(preferences))
+  } catch {
+    // Private browsing, managed-device policy, or a full quota must not crash
+    // the mobile shell. The in-memory React state remains usable this session.
+  }
 }
