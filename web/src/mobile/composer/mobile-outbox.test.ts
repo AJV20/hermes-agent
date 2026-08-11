@@ -83,8 +83,8 @@ describe('MobileOutboxStore', () => {
   it('marks incomplete submission recovery as ambiguous and never replays it', async () => {
     const outbox = store()
     const item = await outbox.createReady({ attachments: [], profile: 'default', storedSessionId: 'session-a', text: 'do not replay' })
-    await outbox.transition(item.operationId, 'SUBMITTING')
-    await outbox.transition(item.operationId, 'AMBIGUOUS')
+    await outbox.claim(item.operationId, 'owner-a')
+    await outbox.failClaim(item.operationId, 'owner-a', 'AMBIGUOUS')
 
     const recovered = await outbox.list('default', 'session-a')
     expect(recovered[0].state).toBe('AMBIGUOUS')
@@ -128,16 +128,29 @@ describe('MobileOutboxStore', () => {
     await expect(outbox.list('default', 'session-a')).resolves.toHaveLength(1)
   })
 
-  it('prevents another tab from resetting an operation that is already submitting', async () => {
+  it('gives one tab durable ownership and rejects stale mutation or consumption', async () => {
     const firstTab = store()
     const secondTab = store()
     const item = await firstTab.createReady({ attachments: [], profile: 'default', storedSessionId: 'session-a', text: 'one send only' })
-    await firstTab.transition(item.operationId, 'SUBMITTING')
+    await firstTab.claim(item.operationId, 'owner-a')
 
-    await expect(secondTab.replaceReady(item.operationId, {
-      attachments: [], profile: 'default', storedSessionId: 'session-a', text: 'one send only'
-    })).rejects.toMatchObject({ code: 'CORRUPT' })
-    await expect(firstTab.list('default', 'session-a')).resolves.toMatchObject([{ state: 'AMBIGUOUS' }])
+    await expect(secondTab.claim(item.operationId, 'owner-b')).rejects.toMatchObject({ code: 'CORRUPT' })
+    await expect(secondTab.failClaim(item.operationId, 'owner-b', 'READY')).rejects.toMatchObject({ code: 'CORRUPT' })
+    await expect(secondTab.remove(item.operationId, 'owner-b')).rejects.toMatchObject({ code: 'CORRUPT' })
+    await expect(secondTab.list('default', 'session-a')).resolves.toEqual([])
+
+    await firstTab.complete(item.operationId, 'owner-a')
+    await expect(firstTab.list('default', 'session-a')).resolves.toEqual([])
+  })
+
+  it('recovers only an expired ownership lease as ambiguous', async () => {
+    const firstTab = store()
+    const secondTab = store()
+    const item = await firstTab.createReady({ attachments: [], profile: 'default', storedSessionId: 'session-a', text: 'review after crash' })
+    await firstTab.claim(item.operationId, 'owner-a', 1)
+    await new Promise(resolve => setTimeout(resolve, 2))
+
+    await expect(secondTab.list('default', 'session-a')).resolves.toMatchObject([{ state: 'AMBIGUOUS', ownerId: null }])
   })
 
   it('rejects impossible state transitions without changing the saved operation', async () => {

@@ -54,6 +54,11 @@ export function ChatScreen({
   const navigate = useNavigate()
   const gateway = useMemo(() => new GatewayClient(), [])
   const outbox = useMemo(() => createMobileOutbox(), [])
+  const outboxOwnerId = useRef(
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `owner-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  )
   const isNew = storedSessionId === 'new'
   const runtimeId = useRef<string | null>(null)
   const pendingStoredId = useRef<string | null>(null)
@@ -441,8 +446,10 @@ export function ChatScreen({
         }))
       }
       let requestDispatched = false
+      let claimAcquired = false
       try {
-        await outbox.transition(persistedOperation.operationId, 'SUBMITTING')
+        persistedOperation = await outbox.claim(persistedOperation.operationId, outboxOwnerId.current)
+        claimAcquired = true
         const preparedAttachments: Array<{ attachment: MobileAttachment; dataUrl: string }> = []
         for (const attachment of pendingAttachments) {
           if (canceledAttachmentIds.current.has(attachment.id)) continue
@@ -456,7 +463,7 @@ export function ChatScreen({
           ({ attachment }) => !canceledAttachmentIds.current.has(attachment.id)
         )
         if (!text && !sendableAttachments.length) {
-          await outbox.remove(persistedOperation.operationId)
+          await outbox.remove(persistedOperation.operationId, outboxOwnerId.current)
           dropCanceledSubmission()
           return
         }
@@ -483,7 +490,7 @@ export function ChatScreen({
           runtimeId.current = sid
           const durableStoredId = created.stored_session_id || sid
           pendingStoredId.current = durableStoredId
-          persistedOperation = await outbox.rekey(persistedOperation.operationId, durableStoredId)
+          persistedOperation = await outbox.rekey(persistedOperation.operationId, durableStoredId, outboxOwnerId.current)
         }
         const fileRefs: string[] = []
         let attachedCount = 0
@@ -518,15 +525,14 @@ export function ChatScreen({
           ))
         }
         if (!text && attachedCount === 0) {
-          await outbox.remove(persistedOperation.operationId)
+          await outbox.remove(persistedOperation.operationId, outboxOwnerId.current)
           dropCanceledSubmission()
           return
         }
         const promptText = [...fileRefs, text].filter(Boolean).join('\n\n')
         requestDispatched = true
         await gateway.request('prompt.submit', { session_id: sid, text: promptText }, PROMPT_TIMEOUT_MS)
-        await outbox.transition(persistedOperation.operationId, 'SENT')
-        await outbox.remove(persistedOperation.operationId)
+        await outbox.complete(persistedOperation.operationId, outboxOwnerId.current)
         if (submitGeneration.current !== generation) return
         releaseSubmission()
         setRecoveryOperations(current => current.filter(item => item.operationId !== persistedOperation.operationId))
@@ -546,12 +552,23 @@ export function ChatScreen({
         }
       } catch (error) {
         const recoveryState = requestDispatched ? 'AMBIGUOUS' : 'READY'
-        try { await outbox.transition(persistedOperation.operationId, recoveryState) } catch { /* keep the original durable record if recovery-state write fails */ }
+        let recoveryUpdated = false
+        if (claimAcquired) {
+          try {
+            persistedOperation = await outbox.failClaim(persistedOperation.operationId, outboxOwnerId.current, recoveryState)
+            recoveryUpdated = true
+          } catch { /* another context cannot be overwritten by this stale sender */ }
+        }
         if (submitGeneration.current !== generation) return
         releaseSubmission()
-        setRecoveryOperations(current => [...current.filter(item => item.operationId !== persistedOperation.operationId), { ...persistedOperation, state: recoveryState }])
-        setReviewOperationId(requestDispatched ? null : persistedOperation.operationId)
-        if (!requestDispatched) setDraft(current => current.trim() ? current : text)
+        if (recoveryUpdated) {
+          setRecoveryOperations(current => [...current.filter(item => item.operationId !== persistedOperation.operationId), { ...persistedOperation, state: recoveryState }])
+          setReviewOperationId(requestDispatched ? null : persistedOperation.operationId)
+          if (!requestDispatched) setDraft(current => current.trim() ? current : text)
+        } else {
+          setRecoveryOperations(current => current.filter(item => item.operationId !== persistedOperation.operationId))
+          setReviewOperationId(null)
+        }
         const message = error instanceof Error ? error.message : 'Could not send message'
         setAttachments(current => current.map(attachment => (
           pendingAttachments.some(pending => pending.id === attachment.id) && attachment.status !== 'canceled'

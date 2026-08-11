@@ -10,7 +10,9 @@ export interface StoredMobileAttachment {
 export interface MobileOutboxOperation {
   attachments: StoredMobileAttachment[]
   createdAt: number
+  leaseExpiresAt?: number | null
   operationId: string
+  ownerId?: string | null
   profile: string
   state: MobileOutboxState
   storedSessionId: string
@@ -20,12 +22,15 @@ export interface MobileOutboxOperation {
 }
 
 export interface MobileOutboxStore {
+  claim(operationId: string, ownerId: string, leaseMs?: number): Promise<MobileOutboxOperation>
   close(): void
+  complete(operationId: string, ownerId: string): Promise<void>
   createReady(input: Pick<MobileOutboxOperation, 'attachments' | 'profile' | 'storedSessionId' | 'text'>): Promise<MobileOutboxOperation>
   destroy(): Promise<void>
+  failClaim(operationId: string, ownerId: string, state: 'READY' | 'AMBIGUOUS' | 'FAILED'): Promise<MobileOutboxOperation>
   list(profile: string, storedSessionId: string): Promise<MobileOutboxOperation[]>
-  rekey(operationId: string, storedSessionId: string): Promise<MobileOutboxOperation>
-  remove(operationId: string): Promise<void>
+  rekey(operationId: string, storedSessionId: string, ownerId?: string): Promise<MobileOutboxOperation>
+  remove(operationId: string, ownerId?: string): Promise<void>
   replaceReady(operationId: string, input: Pick<MobileOutboxOperation, 'attachments' | 'profile' | 'storedSessionId' | 'text'>): Promise<MobileOutboxOperation>
   transition(operationId: string, state: MobileOutboxState): Promise<void>
   unsafePutForTest(value: unknown): Promise<void>
@@ -83,15 +88,17 @@ const ALLOWED_TRANSITIONS: Record<MobileOutboxState, readonly MobileOutboxState[
   DRAFT: ['READY', 'NEEDS_RESELECT', 'FAILED'],
   FAILED: ['DRAFT', 'READY', 'NEEDS_RESELECT'],
   NEEDS_RESELECT: ['DRAFT'],
-  READY: ['DRAFT', 'SUBMITTING', 'NEEDS_RESELECT', 'FAILED'],
+  READY: ['DRAFT', 'NEEDS_RESELECT', 'FAILED'],
   SENT: [],
-  SUBMITTING: ['READY', 'SENT', 'AMBIGUOUS', 'NEEDS_RESELECT', 'FAILED']
+  SUBMITTING: []
 }
 
 function validate(value: unknown): asserts value is MobileOutboxOperation {
   const operation = value as Partial<MobileOutboxOperation>
   if (!operation || operation.version !== 1 || typeof operation.operationId !== 'string' || typeof operation.profile !== 'string'
     || typeof operation.storedSessionId !== 'string' || typeof operation.text !== 'string' || !validState(operation.state)
+    || (operation.ownerId != null && typeof operation.ownerId !== 'string')
+    || (operation.leaseExpiresAt != null && typeof operation.leaseExpiresAt !== 'number')
     || !Array.isArray(operation.attachments) || !operation.attachments.every(item => item && isBlob(item.blob)
       && typeof item.name === 'string' && typeof item.type === 'string' && typeof item.lastModified === 'number')) {
     throw new MobileOutboxError('CORRUPT', 'A saved message could not be validated. It was not changed.')
@@ -132,22 +139,38 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
 
   const list = async (profile: string, storedSessionId: string) => {
     const db = await open()
-    const tx = db.transaction(STORE, 'readonly')
+    const tx = db.transaction(STORE, 'readwrite')
     const done = transactionDone(tx)
-    const rows = await request(tx.objectStore(STORE).index('scope').getAll([profile, storedSessionId]))
-    await done
+    const store = tx.objectStore(STORE)
+    const rows = await request(store.index('scope').getAll([profile, storedSessionId]))
     try {
       rows.forEach(validate)
     } catch (error) {
+      tx.abort()
+      await done.catch(() => undefined)
       if (error instanceof MobileOutboxError) throw error
       throw new MobileOutboxError('CORRUPT', 'A saved message could not be validated. It was not changed.')
     }
-    const recoverable = rows.filter(operation => operation.state !== 'SENT').sort((a, b) => a.createdAt - b.createdAt)
-    await Promise.all(recoverable.filter(operation => operation.state === 'SUBMITTING').map(async operation => {
-      await transition(operation.operationId, 'AMBIGUOUS')
-      operation.state = 'AMBIGUOUS'
-      operation.updatedAt = Date.now()
-    }))
+    const now = Date.now()
+    const recoverable: MobileOutboxOperation[] = []
+    for (const operation of rows.sort((a, b) => a.createdAt - b.createdAt)) {
+      if (operation.state === 'SENT') continue
+      if (operation.state === 'SUBMITTING') {
+        if ((operation.leaseExpiresAt ?? 0) > now) continue
+        const expired: MobileOutboxOperation = {
+          ...operation,
+          leaseExpiresAt: null,
+          ownerId: null,
+          state: 'AMBIGUOUS',
+          updatedAt: now
+        }
+        store.put(expired)
+        recoverable.push(expired)
+        continue
+      }
+      recoverable.push(operation)
+    }
+    await done
     return recoverable
   }
 
@@ -221,7 +244,57 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
     return rewritten
   }
 
+  const claim = (id: string, ownerId: string, leaseMs = 31 * 60 * 1000) => rewrite(id, operation => {
+    if (!ownerId || !['READY', 'AMBIGUOUS', 'FAILED', 'DRAFT'].includes(operation.state)) {
+      throw new MobileOutboxError('CORRUPT', 'This saved message is already owned by another send.')
+    }
+    const now = Date.now()
+    return { ...operation, leaseExpiresAt: now + Math.max(1, leaseMs), ownerId, state: 'SUBMITTING', updatedAt: now }
+  })
+
+  const failClaim = (id: string, ownerId: string, state: 'READY' | 'AMBIGUOUS' | 'FAILED') => rewrite(id, operation => {
+    if (operation.state !== 'SUBMITTING' || operation.ownerId !== ownerId) {
+      throw new MobileOutboxError('CORRUPT', 'This saved message is owned by another send.')
+    }
+    return { ...operation, leaseExpiresAt: null, ownerId: null, state, updatedAt: Date.now() }
+  })
+
+  const complete = async (id: string, ownerId: string) => {
+    const db = await open()
+    const tx = db.transaction(STORE, 'readwrite')
+    const done = transactionDone(tx)
+    const store = tx.objectStore(STORE)
+    const operation = await request(store.get(id))
+    validate(operation)
+    if (operation.state !== 'SUBMITTING' || operation.ownerId !== ownerId) {
+      tx.abort()
+      await done.catch(() => undefined)
+      throw new MobileOutboxError('CORRUPT', 'This saved message is owned by another send.')
+    }
+    store.delete(id)
+    await done
+  }
+
+  const remove = async (id: string, ownerId?: string) => {
+    const db = await open()
+    const tx = db.transaction(STORE, 'readwrite')
+    const done = transactionDone(tx)
+    const store = tx.objectStore(STORE)
+    const operation = await request(store.get(id))
+    if (operation !== undefined) {
+      validate(operation)
+      if (operation.state === 'SUBMITTING' && operation.ownerId !== ownerId) {
+        tx.abort()
+        await done.catch(() => undefined)
+        throw new MobileOutboxError('CORRUPT', 'This saved message is owned by another send.')
+      }
+    }
+    store.delete(id)
+    await done
+  }
+
   return {
+    claim,
     close: () => {
       closed = true
       if (openedDatabase) openedDatabase.close()
@@ -229,6 +302,7 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
       openedDatabase = null
       database = null
     },
+    complete,
     createReady,
     destroy: async () => {
       closed = true
@@ -237,19 +311,19 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
       openedDatabase = null
       database = null
     },
+    failClaim,
     list,
-    rekey: (id, storedSessionId) => rewrite(id, operation => ({
-      ...operation,
-      storedSessionId,
-      updatedAt: Date.now()
-    })),
-    remove: async id => {
-      const db = await open()
-      const tx = db.transaction(STORE, 'readwrite')
-      const done = transactionDone(tx)
-      tx.objectStore(STORE).delete(id)
-      await done
-    },
+    rekey: (id, storedSessionId, ownerId) => rewrite(id, operation => {
+      if (operation.state === 'SUBMITTING' && operation.ownerId !== ownerId) {
+        throw new MobileOutboxError('CORRUPT', 'This saved message is owned by another send.')
+      }
+      return {
+        ...operation,
+        storedSessionId,
+        updatedAt: Date.now()
+      }
+    }),
+    remove,
     replaceReady: (id, input) => rewrite(id, operation => {
       if (!['READY', 'AMBIGUOUS', 'FAILED', 'DRAFT'].includes(operation.state)
         || operation.profile !== input.profile || operation.storedSessionId !== input.storedSessionId) {
