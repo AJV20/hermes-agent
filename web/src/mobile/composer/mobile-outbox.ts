@@ -24,7 +24,9 @@ export interface MobileOutboxStore {
   createReady(input: Pick<MobileOutboxOperation, 'attachments' | 'profile' | 'storedSessionId' | 'text'>): Promise<MobileOutboxOperation>
   destroy(): Promise<void>
   list(profile: string, storedSessionId: string): Promise<MobileOutboxOperation[]>
+  rekey(operationId: string, storedSessionId: string): Promise<MobileOutboxOperation>
   remove(operationId: string): Promise<void>
+  replaceReady(operationId: string, input: Pick<MobileOutboxOperation, 'attachments' | 'profile' | 'storedSessionId' | 'text'>): Promise<MobileOutboxOperation>
   transition(operationId: string, state: MobileOutboxState): Promise<void>
   unsafePutForTest(value: unknown): Promise<void>
 }
@@ -192,6 +194,33 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
     await done
   }
 
+  const rewrite = async (
+    id: string,
+    update: (operation: MobileOutboxOperation) => MobileOutboxOperation
+  ) => {
+    const db = await open()
+    const tx = db.transaction(STORE, 'readwrite')
+    const done = transactionDone(tx)
+    const store = tx.objectStore(STORE)
+    const operation = await request(store.get(id))
+    validate(operation)
+    const rewritten = update(operation)
+    validate(rewritten)
+    const existing = await request(store.getAll())
+    existing.forEach(validate)
+    const otherBytes = existing
+      .filter(item => item.operationId !== id)
+      .reduce((total, item) => total + byteSize(item), 0)
+    if (byteSize(rewritten) > maxItemBytes || otherBytes + byteSize(rewritten) > maxTotalBytes) {
+      tx.abort()
+      await done.catch(() => undefined)
+      throw new MobileOutboxError('LIMIT_EXCEEDED', 'This message is too large to save for reload.')
+    }
+    store.put(rewritten)
+    await done
+    return rewritten
+  }
+
   return {
     close: () => {
       closed = true
@@ -209,6 +238,11 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
       database = null
     },
     list,
+    rekey: (id, storedSessionId) => rewrite(id, operation => ({
+      ...operation,
+      storedSessionId,
+      updatedAt: Date.now()
+    })),
     remove: async id => {
       const db = await open()
       const tx = db.transaction(STORE, 'readwrite')
@@ -216,6 +250,12 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
       tx.objectStore(STORE).delete(id)
       await done
     },
+    replaceReady: (id, input) => rewrite(id, operation => ({
+      ...operation,
+      ...input,
+      state: 'READY',
+      updatedAt: Date.now()
+    })),
     transition,
     unsafePutForTest: async value => {
       const db = await open()

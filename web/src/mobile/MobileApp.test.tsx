@@ -124,6 +124,7 @@ vi.mock('@/lib/gatewayClient', () => ({
 }))
 
 import { MobileApp } from './MobileApp'
+import { createMobileOutbox } from './composer/mobile-outbox'
 
 let container: HTMLDivElement
 let root: Root
@@ -1165,6 +1166,16 @@ describe('MobileApp', () => {
       'prompt.submit',
       expect.objectContaining({ text: 'Queue this safely' })
     ))
+    expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(1)
+    await waitForReact(() => expect(container.querySelector('button[aria-label="Review queued message"]')).toBeNull())
+    const outboxAudit = createMobileOutbox()
+    expect(await outboxAudit.list('default', 'new')).toEqual([])
+    outboxAudit.close()
+
+    await renderAt('/mobile/chat/new')
+    await waitForReact(() => expect(container.textContent).toContain('Connected to Desktop'))
+    expect(container.querySelector('button[aria-label="Review queued message"]')).toBeNull()
+    expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(1)
   })
 
   it('persists unsent drafts across mobile route changes', async () => {
@@ -1209,6 +1220,15 @@ describe('MobileApp', () => {
       expect(container.querySelector('button[aria-label="Review message with uncertain delivery"]')).not.toBeNull()
       expect(container.querySelectorAll('.mobile-bubble.is-user')).toHaveLength(0)
     })
+
+    await renderAt('/mobile/chat/stored-1')
+    await waitForReact(() => {
+      expect(container.querySelector('button[aria-label="Review message with uncertain delivery"]')).not.toBeNull()
+    })
+    await renderAt('/mobile/chat/new')
+    await waitForReact(() => expect(container.textContent).toContain('Connected to Desktop'))
+    expect(container.querySelector('button[aria-label="Review message with uncertain delivery"]')).toBeNull()
+    expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(1)
   })
 
   it('keeps offline drafting available after the gateway closes without sending prematurely', async () => {
