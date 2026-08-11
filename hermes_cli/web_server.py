@@ -17942,6 +17942,7 @@ async def post_mobile_notification(
         home,
         body=body.body,
         dedupe_key=body.dedupe_key,
+        enqueue_push=_mobile_push_server_enabled(),
         level=body.level,
         profile=profile_name,
         session_id=body.session_id,

@@ -1,5 +1,7 @@
 """Behavior tests for the authenticated, profile-scoped mobile notification API."""
 
+import sqlite3
+
 from fastapi.testclient import TestClient
 
 from hermes_cli import mobile_push, web_server
@@ -62,6 +64,34 @@ def test_mobile_notifications_are_durable_deduplicated_and_profile_scoped(monkey
     }
     assert (default_home / "mobile_notifications.db").exists()
     assert (profiles["other"] / "mobile_notifications.db").exists()
+
+
+def test_disabled_push_server_does_not_backlog_notification_api_deliveries(monkeypatch, tmp_path):
+    client, default_home, _profiles = _client_for_homes(monkeypatch, tmp_path)
+    monkeypatch.setattr(web_server, "_get_mobile_push_public_key", lambda: "B" * 87)
+    monkeypatch.setattr(mobile_push, "is_transport_available", lambda: True)
+    subscribed = client.put(
+        "/api/mobile/push/subscription",
+        json={
+            "device_id": "disabled-device",
+            "endpoint": "https://fcm.googleapis.com/subscription/disabled",
+            "keys": {"p256dh": "A" * 87, "auth": "C" * 22},
+            "categories": ["warning"],
+        },
+        headers=_headers(),
+    )
+    assert subscribed.status_code == 200
+    monkeypatch.setattr(web_server, "load_config", lambda: {"mobile": {"push": {"enabled": False}}})
+
+    created = client.post(
+        "/api/mobile/notifications",
+        json={"body": "Saved only in the inbox", "level": "warning", "title": "Disabled", "type": "warning"},
+        headers=_headers(),
+    )
+
+    assert created.status_code == 200
+    with sqlite3.connect(default_home / "mobile_notifications.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM mobile_push_deliveries").fetchone()[0] == 0
 
 
 def test_mobile_notifications_mark_read_and_dismiss_without_cross_profile_leak(monkeypatch, tmp_path):
