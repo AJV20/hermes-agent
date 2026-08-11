@@ -1163,6 +1163,79 @@
 .mobile-composer textarea {
   font-size: 1rem;
 }
+.mobile-action-card {
+  margin: 0.5rem 0.75rem;
+  padding: 1rem;
+  border: 1px solid color-mix(in srgb, var(--mobile-accent) 38%, var(--mobile-line));
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--mobile-accent) 8%, var(--mobile-panel));
+  color: var(--mobile-text);
+}
+.mobile-action-card p {
+  margin: 0.55rem 0;
+  color: var(--mobile-muted);
+  line-height: 1.45;
+}
+.mobile-action-card fieldset {
+  margin: 0.65rem 0;
+  padding: 0;
+  border: 0;
+}
+.mobile-action-choice {
+  min-height: 2.75rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--mobile-line);
+  border-radius: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+.mobile-action-choice + .mobile-action-choice {
+  margin-top: 0.4rem;
+}
+.mobile-action-card textarea {
+  width: 100%;
+  min-height: 4.5rem;
+  padding: 0.7rem;
+  border: 1px solid var(--mobile-line);
+  border-radius: 0.75rem;
+  background: var(--mobile-bg);
+  color: var(--mobile-text);
+  font: inherit;
+  resize: vertical;
+}
+.mobile-action-card button {
+  min-height: 2.75rem;
+  padding: 0.5rem 0.8rem;
+  border: 1px solid var(--mobile-line);
+  border-radius: 0.75rem;
+  background: var(--mobile-panel-strong);
+  color: var(--mobile-text);
+  font: inherit;
+  font-weight: 750;
+}
+.mobile-action-buttons,
+.mobile-action-confirm {
+  margin-top: 0.65rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+.mobile-action-card pre {
+  max-width: 100%;
+  padding: 0.65rem;
+  border-radius: 0.65rem;
+  background: var(--mobile-bg);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mobile-action-error {
+  color: #ffb0b0 !important;
+}
+.mobile-action-card.is-expired {
+  border-color: color-mix(in srgb, #f2b659 55%, var(--mobile-line));
+}
 .mobile-outbox {
   flex: 0 0 auto;
   min-height: 3rem;

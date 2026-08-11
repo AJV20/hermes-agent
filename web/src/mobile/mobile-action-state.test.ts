@@ -67,6 +67,23 @@ describe('mobile action projection', () => {
     })
   })
 
+  it('removes permanent approval when the backend explicitly forbids it', () => {
+    const state = applyMobileActionEvent(EMPTY_MOBILE_ACTIONS, {
+      session_id: 'runtime-1',
+      type: 'approval.request',
+      payload: {
+        choices: ['once', 'always', 'deny'],
+        allow_permanent: false
+      }
+    }, 'runtime-1')
+
+    expect(state.pending).toMatchObject({
+      kind: 'approval',
+      allowPermanent: false,
+      choices: ['once', 'deny']
+    })
+  })
+
   it('never retains sudo or secret request payloads on mobile', () => {
     const state = applyMobileActionEvent(EMPTY_MOBILE_ACTIONS, {
       session_id: 'runtime-1',

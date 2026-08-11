@@ -2,7 +2,7 @@ import type { GatewayEvent } from '@/lib/gatewayClient'
 
 export type MobileApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 
-type MobileClarifyAction = {
+export type MobileClarifyAction = {
   kind: 'clarify'
   requestId: string
   question: string
@@ -11,7 +11,7 @@ type MobileClarifyAction = {
   status: 'expired' | 'submitting' | 'waiting'
 }
 
-type MobileApprovalAction = {
+export type MobileApprovalAction = {
   kind: 'approval'
   allowPermanent: boolean
   choices: MobileApprovalChoice[]
@@ -21,7 +21,7 @@ type MobileApprovalAction = {
   status: 'submitting' | 'waiting'
 }
 
-type MobileSensitiveAction = {
+export type MobileSensitiveAction = {
   kind: 'sensitive'
   status: 'unsupported'
 }
@@ -50,10 +50,23 @@ function strings(value: unknown, limit = 20): string[] {
 function approvalChoices(payload: Record<string, unknown>): MobileApprovalChoice[] {
   const allowed = new Set<MobileApprovalChoice>(['always', 'deny', 'once', 'session'])
   const supplied = strings(payload.choices).filter((choice): choice is MobileApprovalChoice => (
-    allowed.has(choice as MobileApprovalChoice)
+    allowed.has(choice as MobileApprovalChoice) && (payload.allow_permanent !== false || choice !== 'always')
   ))
   if (supplied.length) return supplied
   return payload.allow_permanent === false ? ['once', 'deny'] : ['once', 'session', 'always', 'deny']
+}
+
+export function hydrateMobileActionResume(
+  state: MobileActionState,
+  snapshot: { pending_prompt?: { payload?: unknown; type?: string } | null; session_id: string }
+): MobileActionState {
+  const pending = snapshot.pending_prompt
+  if (!pending?.type) return { pending: null }
+  return applyMobileActionEvent(state, {
+    payload: pending.payload,
+    session_id: snapshot.session_id,
+    type: pending.type
+  }, snapshot.session_id)
 }
 
 export function applyMobileActionEvent(

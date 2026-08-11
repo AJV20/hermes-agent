@@ -12,6 +12,13 @@ import {
   type MobileChatState,
   type MobileResumeSnapshot
 } from '../mobile-chat-state'
+import {
+  applyMobileActionEvent,
+  EMPTY_MOBILE_ACTIONS,
+  hydrateMobileActionResume,
+  type MobileActionState
+} from '../mobile-action-state'
+import { ChatActionCard } from './ChatActionCard'
 import { MessageBubble } from './MessageBubble'
 import { MessageActionSheet } from './MessageActionSheet'
 import { IconButton, AppHeader } from '../ui/primitives'
@@ -54,6 +61,7 @@ export function ChatScreen({
   const canceledAttachmentIds = useRef(new Set<string>())
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const [chat, setChat] = useState<MobileChatState>(EMPTY_CHAT)
+  const [actions, setActions] = useState<MobileActionState>(EMPTY_MOBILE_ACTIONS)
   const [draft, setDraft] = useState(() => loadDraft(profile, storedSessionId))
   const [queuedText, setQueuedText] = useState(() => loadOutbox(profile, storedSessionId))
   const [attachments, setAttachments] = useState<MobileAttachment[]>([])
@@ -95,6 +103,7 @@ export function ChatScreen({
 
   useEffect(() => {
     let cancelled = false
+    setActions(EMPTY_MOBILE_ACTIONS)
     historyHydratedRef.current = false
     let reconnectAttempt = 0
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -117,6 +126,7 @@ export function ChatScreen({
       ])
       if (cancelled) return
       runtimeId.current = resumed.session_id
+      setActions(current => hydrateMobileActionResume(current, resumed))
       if (storedResult.ok === true) {
         const returned = storedResult.stored.pagination?.returned ?? storedResult.stored.messages.length
         const limit = storedResult.stored.pagination?.limit ?? 500
@@ -161,8 +171,10 @@ export function ChatScreen({
 
     const disposers = [
       gateway.onAny((event: GatewayEvent) => {
+        if (event.profile && event.profile !== profile) return
         if (event.session_id && event.session_id !== runtimeId.current) return
         if (event.type === 'message.complete' || event.type === 'error') submitInFlight.current = false
+        setActions(current => applyMobileActionEvent(current, event, runtimeId.current))
         setChat(current => applyMobileGatewayEvent(current, event))
       }),
       gateway.onState(state => {
@@ -278,12 +290,15 @@ export function ChatScreen({
     }
   }, [historyPage.hasEarlier, historyPage.loading, historyPage.nextOffset, isNew, profile, storedSessionId])
 
+  const expiredClarify = actions.pending?.kind === 'clarify' && actions.pending.status === 'expired'
+  const composerBusy = chat.busy && !expiredClarify
+
   const submit = useCallback(
     async (event: FormEvent) => {
       event.preventDefault()
       const text = draft.trim()
       const pendingAttachments = attachments.filter(attachment => attachment.status !== 'canceled')
-      if ((!text && !pendingAttachments.length) || chat.busy || submitInFlight.current) return
+      if ((!text && !pendingAttachments.length) || (chat.busy && !expiredClarify) || submitInFlight.current) return
       if (!ready) {
         if (pendingAttachments.length) {
           setChat(current => ({ ...current, error: 'Reconnect before sending attachments. Your selection is preserved.' }))
@@ -439,7 +454,7 @@ export function ChatScreen({
         }))
       }
     },
-    [attachments, chat.busy, draft, gateway, navigate, onSessionCreated, profile, ready]
+    [attachments, chat.busy, draft, expiredClarify, gateway, navigate, onSessionCreated, profile, ready]
   )
 
   const selectAttachments = useCallback((files: FileList | File[]) => {
@@ -511,6 +526,19 @@ export function ChatScreen({
 
   const stopVoiceDictation = useCallback(() => recognitionRef.current?.stop(), [])
 
+  const respondToAction = useCallback(async (response: (
+    | { answer: string; kind: 'clarify'; requestId: string }
+    | { choice: 'always' | 'deny' | 'once' | 'session'; kind: 'approval'; sessionId: string }
+  )) => {
+    const respondedAction = actions.pending
+    if (response.kind === 'clarify') {
+      await gateway.request('clarify.respond', { answer: response.answer, request_id: response.requestId })
+    } else {
+      await gateway.request('approval.respond', { choice: response.choice, session_id: response.sessionId })
+    }
+    setActions(current => current.pending === respondedAction ? EMPTY_MOBILE_ACTIONS : current)
+  }, [actions.pending, gateway])
+
   const stopResponse = useCallback(async () => {
     if (!runtimeId.current) return
     try {
@@ -549,6 +577,7 @@ export function ChatScreen({
         {chat.messages.map(message => (
           <MessageBubble key={message.id} message={message} onActions={() => setSelectedMessage(message)} />
         ))}
+        {actions.pending && <ChatActionCard action={actions.pending} onRespond={respondToAction} />}
         {!!chat.tools.length && (
           <div className="mobile-tool-strip">
             {chat.tools.slice(-3).map(tool => (
@@ -672,16 +701,16 @@ export function ChatScreen({
         </div>
         <textarea
           aria-label="Message Hermes"
-          disabled={chat.busy}
+          disabled={composerBusy}
           onChange={event => setDraft(event.target.value)}
-          placeholder={chat.busy ? 'Hermes is responding…' : ready ? 'Message Hermes…' : 'Write now — Hermes will send when connected…'}
+          placeholder={composerBusy ? 'Hermes is responding…' : ready ? 'Message Hermes…' : 'Write now — Hermes will send when connected…'}
           rows={1}
           value={draft}
         />
         <button
           aria-label={ready ? 'Send message' : 'Queue message'}
           className="mobile-send"
-          disabled={(!draft.trim() && !attachments.length) || chat.busy}
+          disabled={(!draft.trim() && !attachments.length) || composerBusy}
           type="submit"
         >
           <Send />

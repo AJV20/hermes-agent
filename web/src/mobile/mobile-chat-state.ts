@@ -32,6 +32,10 @@ export interface MobileResumeSnapshot {
     streaming?: boolean
     user?: string
   } | null
+  pending_prompt?: {
+    payload?: unknown
+    type?: string
+  } | null
   queued?: { user?: string } | null
   running?: boolean
   status?: string

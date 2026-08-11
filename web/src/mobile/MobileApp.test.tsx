@@ -1464,6 +1464,78 @@ describe('MobileApp', () => {
     expect(stored.cardOrder.indexOf('tasks')).toBeLessThan(2)
   })
 
+  it('enables a normal follow-up after a resumed clarification expires', async () => {
+    gatewayMocks.request.mockImplementation(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          pending_prompt: {
+            type: 'clarify.request',
+            payload: { request_id: 'clarify-expired', question: 'Choose?', choices: ['one', 'two'] }
+          },
+          running: true,
+          session_id: 'runtime-expired'
+        }
+      }
+      return {}
+    })
+    await renderAt('/mobile/chat/session-1')
+
+    const textarea = container.querySelector('textarea[aria-label="Message Hermes"]') as HTMLTextAreaElement
+    expect(textarea.disabled).toBe(true)
+    await act(async () => gatewayMocks.eventHandler?.({
+      payload: { request_id: 'clarify-expired' },
+      session_id: 'runtime-expired',
+      type: 'clarify.expire'
+    }))
+
+    expect(textarea.disabled).toBe(false)
+    const form = container.querySelector('form') as HTMLFormElement
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      setter?.call(textarea, 'Following up normally')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+    expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(1)
+  })
+
+  it('keeps a newer action visible when an older response finishes', async () => {
+    let finishFirstResponse!: () => void
+    const firstResponse = new Promise<void>(resolve => { finishFirstResponse = resolve })
+    gatewayMocks.request.mockImplementation((method: string) => {
+      if (method === 'session.resume') return Promise.resolve({ session_id: 'runtime-actions' })
+      if (method === 'clarify.respond') return firstResponse
+      return Promise.resolve({})
+    })
+    await renderAt('/mobile/chat/session-1')
+    await act(async () => gatewayMocks.eventHandler?.({
+      payload: { request_id: 'clarify-a', question: 'First question?' },
+      session_id: 'runtime-actions',
+      type: 'clarify.request'
+    }))
+
+    const answer = container.querySelector('textarea[aria-label="Clarification answer"]') as HTMLTextAreaElement
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      setter?.call(answer, 'First answer')
+      answer.dispatchEvent(new Event('input', { bubbles: true }))
+      ;(container.querySelector('button[aria-label="Continue clarification"]') as HTMLButtonElement).click()
+    })
+    await act(async () => gatewayMocks.eventHandler?.({
+      payload: { choices: ['once', 'deny'], command: 'echo newer' },
+      session_id: 'runtime-actions',
+      type: 'approval.request'
+    }))
+    expect(container.querySelector('[aria-label="Command approval needed"]')).not.toBeNull()
+
+    await act(async () => {
+      finishFirstResponse()
+      await firstResponse
+    })
+    expect(container.querySelector('[aria-label="Command approval needed"]')).not.toBeNull()
+  })
+
   it('recovers from a malformed encoded chat URL', async () => {
     await renderAt('/mobile/chat/%')
 
