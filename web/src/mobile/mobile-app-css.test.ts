@@ -55,6 +55,7 @@ describe('mobile bottom navigation layout', () => {
     const attachmentRemove = styles.match(/\.mobile-attachment-chip button\s*\{([^}]*)\}/)?.[1] ?? ''
     const todayAction = styles.match(/\.mobile-today-card a,\s*\.mobile-today-card button\s*\{([^}]*)\}/)?.[1] ?? ''
     const homeUtility = styles.match(/\.mobile-home-utilities a\s*\{([^}]*)\}/)?.[1] ?? ''
+    const outboxButton = styles.match(/\.mobile-outbox button\s*\{([^}]*)\}/)?.[1] ?? ''
 
     expect(iconButton).toContain('width: 3rem')
     expect(iconButton).toContain('height: 3rem')
@@ -66,6 +67,7 @@ describe('mobile bottom navigation layout', () => {
     expect(attachmentRemove).toContain('height: 3rem')
     expect(todayAction).toContain('min-height: 44px')
     expect(homeUtility).toContain('min-height: 44px')
+    expect(outboxButton).toContain('min-height: 44px')
   })
 
   it('raises Jump to latest above the attachment composer row', () => {
