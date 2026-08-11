@@ -41,6 +41,58 @@ def _(rid, params: dict) -> dict:
     # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    mobile_operation_id = str(params.get("mobile_operation_id") or "").strip()
+    if len(mobile_operation_id) > 128 or any(
+        character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-"
+        for character in mobile_operation_id
+    ):
+        mobile_operation_id = ""
+    if mobile_operation_id:
+        # A recovered first-message operation can retry session.create after the
+        # client was killed between receiving this response and rekeying IndexedDB.
+        # Reuse the still-live empty gateway session instead of detaching it and
+        # creating a second session. Session rows are not persisted until the first
+        # prompt, so a gateway restart cannot leave a durable duplicate here.
+        profile_scope = str(profile_home) if profile_home is not None else None
+        with _sessions_lock:
+            duplicate = next(
+                (
+                    (existing_sid, existing)
+                    for existing_sid, existing in _sessions.items()
+                    if existing.get("mobile_operation_id") == mobile_operation_id
+                    and existing.get("profile_home") == profile_scope
+                ),
+                None,
+            )
+            if duplicate is not None:
+                existing_sid, existing = duplicate
+                existing_history = list(existing.get("history") or [])
+                model_override = existing.get("model_override") or {}
+                return _ok(
+                    rid,
+                    {
+                        "session_id": existing_sid,
+                        "stored_session_id": existing.get("session_key") or existing_sid,
+                        "message_count": len(existing_history),
+                        "messages": _history_to_messages(existing_history),
+                        "info": {
+                            "model": model_override.get("model") or _resolve_model(),
+                            **(
+                                {"provider": model_override["provider"]}
+                                if model_override.get("provider")
+                                else {}
+                            ),
+                            "tools": {},
+                            "skills": {},
+                            "cwd": existing.get("cwd") or resolved_cwd,
+                            "branch": _git_branch_for_cwd(existing.get("cwd") or resolved_cwd),
+                            "project": _project_info_for_cwd(existing.get("cwd") or resolved_cwd),
+                            "lazy": True,
+                            "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+                            "profile_name": _response_profile_name(profile),
+                        },
+                    },
+                )
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into
@@ -93,6 +145,7 @@ def _(rid, params: dict) -> dict:
             "cwd": resolved_cwd,
             "inflight_turn": None,
             "last_active": now,
+            "mobile_operation_id": mobile_operation_id or None,
             "model_override": session_model_override,
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,

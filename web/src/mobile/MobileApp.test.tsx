@@ -1200,6 +1200,10 @@ describe('MobileApp', () => {
       'prompt.submit',
       expect.objectContaining({ text: 'Queue this safely' })
     ))
+    expect(gatewayMocks.request).toHaveBeenCalledWith(
+      'session.create',
+      expect.objectContaining({ mobile_operation_id: expect.any(String) })
+    )
     expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(1)
     await waitForReact(() => expect(container.querySelector('button[aria-label="Review queued message"]')).toBeNull())
     const outboxAudit = createMobileOutbox()

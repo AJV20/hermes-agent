@@ -473,6 +473,7 @@ export function ChatScreen({
             'session.create',
             {
               cols: 48,
+              mobile_operation_id: persistedOperation.operationId,
               ...(profile ? { profile } : {}),
               source: 'web',
               title: (text || attachmentNames || 'Attachment').slice(0, 72)
