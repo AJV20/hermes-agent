@@ -103,7 +103,13 @@ describe('mobile bottom navigation layout', () => {
     const refreshButton = styles.match(/\.mobile-codex-quota-icon,\s*\.mobile-codex-quota-heading button\s*\{([^}]*)\}/)?.[1] ?? ''
 
     expect(singleWindow).toContain('grid-column: 1 / -1')
-    expect(refreshButton).toContain('height: 2.75rem')
+    expect(refreshButton).toContain('height: 3rem')
+  })
+
+  it('keeps update-banner actions at least 44 CSS pixels tall with the 15px base type scale', () => {
+    const updateButton = styles.match(/\.mobile-update-banner button\s*\{([^}]*)\}/)?.[1] ?? ''
+
+    expect(updateButton).toContain('min-height: 3rem')
   })
 
   it('keeps chat bubbles content-sized instead of stretching short messages across iPad', () => {
