@@ -1125,6 +1125,40 @@ describe('MobileApp', () => {
     })
   })
 
+  it('never exposes a recovered operation after switching to another session scope', async () => {
+    const outbox = createMobileOutbox()
+    await outbox.createReady({ attachments: [], profile: 'default', storedSessionId: 'session-1', text: 'private scope A' })
+    outbox.close()
+    await renderAt('/mobile/chat/session-1')
+    await waitForReact(() => expect(container.querySelector('button[aria-label="Review queued message"]')).not.toBeNull())
+
+    await act(async () => {
+      ;(container.querySelector('[data-testid="switch-to-session-b"]') as HTMLAnchorElement).click()
+    })
+
+    expect(container.querySelector('button[aria-label="Review queued message"]')).toBeNull()
+    expect(container.textContent).not.toContain('private scope A')
+  })
+
+  it('never exposes a recovered operation after switching profiles in the same chat route', async () => {
+    const outbox = createMobileOutbox()
+    await outbox.createReady({ attachments: [], profile: 'default', storedSessionId: 'session-1', text: 'private default profile' })
+    outbox.close()
+    await renderAt('/mobile/chat/session-1')
+    await waitForReact(() => expect(container.querySelector('button[aria-label="Review queued message"]')).not.toBeNull())
+
+    profileMocks.profile = 'mabel'
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={['/mobile/chat/session-1']} key="/mobile/chat/session-1">
+          <MobileAppHarness />
+        </MemoryRouter>
+      )
+    })
+
+    expect(container.querySelector('button[aria-label="Review queued message"]')).toBeNull()
+  })
+
   it('allows drafting while the gateway connects and queues the message safely', async () => {
     let finishConnect!: () => void
     gatewayMocks.connect.mockReturnValueOnce(new Promise<void>(resolve => {

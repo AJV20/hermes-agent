@@ -250,12 +250,18 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
       tx.objectStore(STORE).delete(id)
       await done
     },
-    replaceReady: (id, input) => rewrite(id, operation => ({
-      ...operation,
-      ...input,
-      state: 'READY',
-      updatedAt: Date.now()
-    })),
+    replaceReady: (id, input) => rewrite(id, operation => {
+      if (!['READY', 'AMBIGUOUS', 'FAILED', 'DRAFT'].includes(operation.state)
+        || operation.profile !== input.profile || operation.storedSessionId !== input.storedSessionId) {
+        throw new MobileOutboxError('CORRUPT', 'This saved message is already owned by another send or scope.')
+      }
+      return {
+        ...operation,
+        ...input,
+        state: 'READY',
+        updatedAt: Date.now()
+      }
+    }),
     transition,
     unsafePutForTest: async value => {
       const db = await open()

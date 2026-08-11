@@ -128,6 +128,18 @@ describe('MobileOutboxStore', () => {
     await expect(outbox.list('default', 'session-a')).resolves.toHaveLength(1)
   })
 
+  it('prevents another tab from resetting an operation that is already submitting', async () => {
+    const firstTab = store()
+    const secondTab = store()
+    const item = await firstTab.createReady({ attachments: [], profile: 'default', storedSessionId: 'session-a', text: 'one send only' })
+    await firstTab.transition(item.operationId, 'SUBMITTING')
+
+    await expect(secondTab.replaceReady(item.operationId, {
+      attachments: [], profile: 'default', storedSessionId: 'session-a', text: 'one send only'
+    })).rejects.toMatchObject({ code: 'CORRUPT' })
+    await expect(firstTab.list('default', 'session-a')).resolves.toMatchObject([{ state: 'AMBIGUOUS' }])
+  })
+
   it('rejects impossible state transitions without changing the saved operation', async () => {
     const outbox = store()
     const item = await outbox.createReady({ attachments: [], profile: 'default', storedSessionId: 'session-a', text: 'safe state' })
