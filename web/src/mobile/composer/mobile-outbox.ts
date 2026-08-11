@@ -80,7 +80,10 @@ function validState(value: unknown): value is MobileOutboxState {
 }
 
 function isBlob(value: unknown): value is Blob {
-  return Boolean(value) && typeof (value as Blob).size === 'number'
+  // IndexedDB returns structured-cloned Blobs in the current realm. A numeric
+  // `size` property is not sufficient: accepting a plain object would let a
+  // corrupt attachment be silently string-coerced into different bytes.
+  return typeof Blob !== 'undefined' && value instanceof Blob
 }
 
 const ALLOWED_TRANSITIONS: Record<MobileOutboxState, readonly MobileOutboxState[]> = {

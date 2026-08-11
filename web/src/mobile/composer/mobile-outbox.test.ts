@@ -80,6 +80,24 @@ describe('MobileOutboxStore', () => {
     await expect(outbox.list('default', 'session-a')).rejects.toMatchObject({ code: 'CORRUPT' })
   })
 
+  it('rejects a numeric-size attachment impostor without changing the record', async () => {
+    const outbox = store()
+    await outbox.unsafePutForTest({
+      attachments: [{ blob: { size: 1 }, lastModified: 1, name: 'corrupt.txt', type: 'text/plain' }],
+      createdAt: 1,
+      operationId: 'bad-blob',
+      profile: 'default',
+      state: 'READY',
+      storedSessionId: 'session-a',
+      text: 'attachment',
+      updatedAt: 1,
+      version: 1
+    })
+
+    await expect(outbox.list('default', 'session-a')).rejects.toMatchObject({ code: 'CORRUPT' })
+    await expect(outbox.list('default', 'session-a')).rejects.toMatchObject({ code: 'CORRUPT' })
+  })
+
   it('marks incomplete submission recovery as ambiguous and never replays it', async () => {
     const outbox = store()
     const item = await outbox.createReady({ attachments: [], profile: 'default', storedSessionId: 'session-a', text: 'do not replay' })
