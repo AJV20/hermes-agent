@@ -313,18 +313,21 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
     const done = transactionDone(tx)
     const store = tx.objectStore(STORE)
     const operation = await request(store.get(id))
-    if (operation !== undefined) {
-      validate(operation)
-      if (operation.revision !== expectedRevision) {
-        tx.abort()
-        await done.catch(() => undefined)
-        throw new MobileOutboxError('CONFLICT', 'This saved message changed in another tab. Review the latest version.')
-      }
-      if (operation.state === 'SUBMITTING' && operation.ownerId !== ownerId) {
-        tx.abort()
-        await done.catch(() => undefined)
-        throw new MobileOutboxError('CORRUPT', 'This saved message is owned by another send.')
-      }
+    if (operation === undefined) {
+      tx.abort()
+      await done.catch(() => undefined)
+      throw new MobileOutboxError('CONFLICT', 'This saved message changed in another tab. Review the latest version.')
+    }
+    validate(operation)
+    if (operation.revision !== expectedRevision) {
+      tx.abort()
+      await done.catch(() => undefined)
+      throw new MobileOutboxError('CONFLICT', 'This saved message changed in another tab. Review the latest version.')
+    }
+    if (operation.state === 'SUBMITTING' && operation.ownerId !== ownerId) {
+      tx.abort()
+      await done.catch(() => undefined)
+      throw new MobileOutboxError('CORRUPT', 'This saved message is owned by another send.')
     }
     store.delete(id)
     await done

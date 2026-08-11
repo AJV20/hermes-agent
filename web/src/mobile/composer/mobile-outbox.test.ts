@@ -188,6 +188,15 @@ describe('MobileOutboxStore', () => {
     ])
   })
 
+  it('rejects a stale removal after another tab already consumed the record', async () => {
+    const firstTab = store()
+    const secondTab = store()
+    const item = await firstTab.createReady({ attachments: [], profile: 'default', storedSessionId: 'session-a', text: 'one removal' })
+
+    await firstTab.remove(item.operationId, item.revision)
+    await expect(secondTab.remove(item.operationId, item.revision)).rejects.toMatchObject({ code: 'CONFLICT' })
+  })
+
   it('fails closed for a submitting record without a durable owner lease', async () => {
     const outbox = store()
     await outbox.unsafePutForTest({
