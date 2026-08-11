@@ -24,6 +24,7 @@ import { MessageBubble } from './MessageBubble'
 import { MessageActionSheet } from './MessageActionSheet'
 import { IconButton, AppHeader } from '../ui/primitives'
 import { loadDraft, loadOutbox, saveDraft, saveOutbox } from '../composer/draft-outbox'
+import { createMobileOutbox, MobileOutboxError, type MobileOutboxOperation } from '../composer/mobile-outbox'
 import { getSpeechRecognitionConstructor, type SpeechRecognitionConstructor, type SpeechRecognitionLike } from '../composer/speech-recognition'
 import { createMobileAttachment, revokeAttachmentPreview, type MobileAttachment } from '../media/attachment-state'
 import { readFileAsDataUrl } from '../media/read-file-as-data-url'
@@ -52,9 +53,11 @@ export function ChatScreen({
 }) {
   const navigate = useNavigate()
   const gateway = useMemo(() => new GatewayClient(), [])
+  const outbox = useMemo(() => createMobileOutbox(), [])
   const isNew = storedSessionId === 'new'
   const runtimeId = useRef<string | null>(null)
   const pendingStoredId = useRef<string | null>(null)
+  const legacyMigrationKey = useRef<string | null>(null)
   const submitInFlight = useRef(false)
   const submitGeneration = useRef(0)
   const filePickerRef = useRef<HTMLInputElement | null>(null)
@@ -65,7 +68,8 @@ export function ChatScreen({
   const [chat, setChat] = useState<MobileChatState>(EMPTY_CHAT)
   const [actions, setActions] = useState<MobileActionState>(EMPTY_MOBILE_ACTIONS)
   const [draft, setDraft] = useState(() => loadDraft(profile, storedSessionId))
-  const [queuedText, setQueuedText] = useState(() => loadOutbox(profile, storedSessionId))
+  const [recoveryOperations, setRecoveryOperations] = useState<MobileOutboxOperation[]>([])
+  const [outboxNotice, setOutboxNotice] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<MobileAttachment[]>([])
   const [selectedMessage, setSelectedMessage] = useState<MobileChatMessage | null>(null)
   const [voiceActive, setVoiceActive] = useState(false)
@@ -85,23 +89,40 @@ export function ChatScreen({
   }, [draft, profile, storedSessionId])
 
   useEffect(() => {
-    saveOutbox(profile, storedSessionId, queuedText)
-  }, [profile, queuedText, storedSessionId])
+    let cancelled = false
+    const scope = `${profile || 'default'}:${storedSessionId}`
+    void outbox.list(profile || 'default', storedSessionId).then(
+      operations => { if (!cancelled) setRecoveryOperations(operations) },
+      error => { if (!cancelled) setOutboxNotice(error instanceof MobileOutboxError ? `${error.message} Current composer is not saved for reload.` : 'Saved messages could not be read. Current composer is not saved for reload.') }
+    )
+    const legacyText = loadOutbox(profile, storedSessionId)
+    if (legacyText && legacyMigrationKey.current !== scope) {
+      legacyMigrationKey.current = scope
+      void outbox.createReady({ attachments: [], profile: profile || 'default', storedSessionId, text: legacyText }).then(operation => {
+        saveOutbox(profile, storedSessionId, '')
+        if (!cancelled) setRecoveryOperations(current => current.some(item => item.operationId === operation.operationId) ? current : [...current, operation])
+      }, error => {
+        if (!cancelled) setOutboxNotice(`${error instanceof Error ? error.message : 'Could not migrate a saved message.'} Current composer is not saved for reload.`)
+      })
+    }
+    return () => { cancelled = true }
+  }, [outbox, profile, storedSessionId])
 
   useEffect(() => {
     attachmentRef.current = attachments
   }, [attachments])
 
   useEffect(() => {
-    onUpdateBlockedChange(Boolean(draft.trim() || attachments.length || chat.busy || voiceActive))
-  }, [attachments.length, chat.busy, draft, onUpdateBlockedChange, voiceActive])
+    onUpdateBlockedChange(Boolean(draft.trim() || attachments.length || recoveryOperations.length || chat.busy || voiceActive))
+  }, [attachments.length, chat.busy, draft, onUpdateBlockedChange, recoveryOperations.length, voiceActive])
 
   useEffect(() => () => onUpdateBlockedChange(false), [onUpdateBlockedChange])
 
   useEffect(() => () => {
     attachmentRef.current.forEach(revokeAttachmentPreview)
     recognitionRef.current?.stop()
-  }, [])
+    outbox.close()
+  }, [outbox])
 
   useEffect(() => {
     let cancelled = false
@@ -207,6 +228,7 @@ export function ChatScreen({
       .connect()
       .then(async () => {
         if (cancelled) return
+        setConnected(true)
         if (isNew) {
           setReady(true)
           return
@@ -317,16 +339,38 @@ export function ChatScreen({
       const text = draft.trim()
       const pendingAttachments = attachments.filter(attachment => attachment.status !== 'canceled')
       if ((!text && !pendingAttachments.length) || (chat.busy && !expiredClarify) || submitInFlight.current) return
+      submitInFlight.current = true
       if (!ready) {
-        if (pendingAttachments.length) {
-          setChat(current => ({ ...current, error: 'Reconnect before sending attachments. Your selection is preserved.' }))
-          return
+        setOutboxNotice('Saving message for safe delivery…')
+        try {
+          const operation = await outbox.createReady({
+            attachments: pendingAttachments.map(attachment => ({ blob: attachment.file, lastModified: attachment.file.lastModified, name: attachment.file.name, type: attachment.file.type })),
+            profile: profile || 'default', storedSessionId, text
+          })
+          setRecoveryOperations(current => [...current, operation])
+          setDraft('')
+          setOutboxNotice('Queued until Hermes reconnects. Review it before sending.')
+          setChat(current => ({ ...current, error: null }))
+        } catch (error) {
+          setOutboxNotice(`${error instanceof Error ? error.message : 'Could not save message.'} Current composer is not saved for reload.`)
+        } finally {
+          submitInFlight.current = false
         }
-        setQueuedText(text)
-        setDraft('')
-        setChat(current => ({ ...current, error: null }))
         return
       }
+      let persistedOperation: MobileOutboxOperation
+      setOutboxNotice('Saving message for safe delivery…')
+      try {
+        persistedOperation = await outbox.createReady({
+          attachments: pendingAttachments.map(attachment => ({ blob: attachment.file, lastModified: attachment.file.lastModified, name: attachment.file.name, type: attachment.file.type })),
+          profile: profile || 'default', storedSessionId, text
+        })
+      } catch (error) {
+        submitInFlight.current = false
+        setOutboxNotice(`${error instanceof Error ? error.message : 'Could not save message.'} Current composer is not saved for reload.`)
+        return
+      }
+      setOutboxNotice(null)
       const optimisticId = `user-${Date.now()}`
       const generation = ++submitGeneration.current
       const releaseSubmission = () => {
@@ -334,7 +378,6 @@ export function ChatScreen({
       }
       const attachmentNames = pendingAttachments.map(attachment => attachment.file.name).join(', ')
       const optimisticContent = [text, attachmentNames ? `📎 ${attachmentNames}` : ''].filter(Boolean).join('\n')
-      submitInFlight.current = true
       setDraft('')
       setAttachments(current => current.map(attachment => (
         pendingAttachments.some(pending => pending.id === attachment.id)
@@ -369,7 +412,9 @@ export function ChatScreen({
           messages: current.messages.filter(message => message.id !== optimisticId)
         }))
       }
+      let requestDispatched = false
       try {
+        await outbox.transition(persistedOperation.operationId, 'SUBMITTING')
         const preparedAttachments: Array<{ attachment: MobileAttachment; dataUrl: string }> = []
         for (const attachment of pendingAttachments) {
           if (canceledAttachmentIds.current.has(attachment.id)) continue
@@ -383,6 +428,7 @@ export function ChatScreen({
           ({ attachment }) => !canceledAttachmentIds.current.has(attachment.id)
         )
         if (!text && !sendableAttachments.length) {
+          await outbox.remove(persistedOperation.operationId)
           dropCanceledSubmission()
           return
         }
@@ -441,13 +487,18 @@ export function ChatScreen({
           ))
         }
         if (!text && attachedCount === 0) {
+          await outbox.remove(persistedOperation.operationId)
           dropCanceledSubmission()
           return
         }
         const promptText = [...fileRefs, text].filter(Boolean).join('\n\n')
+        requestDispatched = true
         await gateway.request('prompt.submit', { session_id: sid, text: promptText }, PROMPT_TIMEOUT_MS)
+        await outbox.transition(persistedOperation.operationId, 'SENT')
+        await outbox.remove(persistedOperation.operationId)
         if (submitGeneration.current !== generation) return
         releaseSubmission()
+        setOutboxNotice(null)
         setAttachments(current => {
           const completed = current.filter(attachment => pendingAttachments.some(pending => pending.id === attachment.id))
           completed.forEach(revokeAttachmentPreview)
@@ -461,9 +512,12 @@ export function ChatScreen({
           navigate(`/mobile/chat/${encodeURIComponent(durable)}`, { replace: true })
         }
       } catch (error) {
+        const recoveryState = requestDispatched ? 'AMBIGUOUS' : 'READY'
+        try { await outbox.transition(persistedOperation.operationId, recoveryState) } catch { /* keep the original durable record if recovery-state write fails */ }
         if (submitGeneration.current !== generation) return
         releaseSubmission()
-        setDraft(current => current.trim() ? current : text)
+        setRecoveryOperations(current => [...current.filter(item => item.operationId !== persistedOperation.operationId), { ...persistedOperation, state: recoveryState }])
+        if (!requestDispatched) setDraft(current => current.trim() ? current : text)
         const message = error instanceof Error ? error.message : 'Could not send message'
         setAttachments(current => current.map(attachment => (
           pendingAttachments.some(pending => pending.id === attachment.id) && attachment.status !== 'canceled'
@@ -478,7 +532,7 @@ export function ChatScreen({
         }))
       }
     },
-    [attachments, chat.busy, draft, expiredClarify, gateway, navigate, onSessionCreated, profile, ready]
+    [attachments, chat.busy, draft, expiredClarify, gateway, navigate, onSessionCreated, outbox, profile, ready, storedSessionId]
   )
 
   const selectAttachments = useCallback((files: FileList | File[]) => {
@@ -654,23 +708,26 @@ export function ChatScreen({
           </div>
         )}
       </div>
-      {queuedText && (
+      {outboxNotice && <div className="mobile-error" role="alert">{outboxNotice}</div>}
+      {!!recoveryOperations.length && (
         <aside className="mobile-outbox" role="status">
-          <span>Queued until Hermes reconnects</span>
-          <button
-            aria-label="Review queued message"
-            onClick={() => {
-              if (draft.trim()) {
-                setChat(current => ({ ...current, error: 'Clear or send the current draft before reviewing the queued message.' }))
-                return
-              }
-              setDraft(queuedText)
-              setQueuedText('')
-            }}
-            type="button"
-          >
-            Review
-          </button>
+          {recoveryOperations.map(operation => (
+            <div key={operation.operationId}>
+              <span>{operation.state === 'AMBIGUOUS' ? 'Needs review: Hermes may already have received this message.' : 'Saved message waiting for your review.'}</span>
+              <button aria-label={operation.state === 'AMBIGUOUS' ? 'Review message with uncertain delivery' : 'Review queued message'} onClick={() => {
+                if (draft.trim() || attachments.length) { setChat(current => ({ ...current, error: 'Clear or send the current draft before reviewing the saved message.' })); return }
+                setDraft(operation.text)
+                setAttachments(operation.attachments.map((attachment, index) => createMobileAttachment(new File([attachment.blob], attachment.name, { lastModified: attachment.lastModified, type: attachment.type }), `${operation.operationId}-${index}`)))
+              }} type="button">Review</button>
+              <button aria-label="Edit saved message" onClick={() => setDraft(operation.text)} type="button">Edit</button>
+              <button aria-label="Send saved message" onClick={() => {
+                if (operation.state === 'AMBIGUOUS') { setChat(current => ({ ...current, error: 'Review this message before sending; Hermes may already have received it.' })); return }
+                setDraft(operation.text)
+                setAttachments(operation.attachments.map((attachment, index) => createMobileAttachment(new File([attachment.blob], attachment.name, { lastModified: attachment.lastModified, type: attachment.type }), `${operation.operationId}-${index}`)))
+              }} type="button">Send</button>
+              <button aria-label="Discard saved message" onClick={() => void outbox.remove(operation.operationId).then(() => setRecoveryOperations(current => current.filter(item => item.operationId !== operation.operationId)))} type="button">Discard</button>
+            </div>
+          ))}
         </aside>
       )}
       {showJumpLatest && (

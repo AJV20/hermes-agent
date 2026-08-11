@@ -1,4 +1,26 @@
 // @vitest-environment jsdom
+import { Blob as NodeBlob, File as NodeFile } from 'node:buffer'
+import 'fake-indexeddb/auto'
+
+class NodeFileReader {
+  error: DOMException | null = null
+  onerror: ((event: ProgressEvent<FileReader>) => void) | null = null
+  onload: ((event: ProgressEvent<FileReader>) => void) | null = null
+  result: string | ArrayBuffer | null = null
+
+  async readAsDataURL(blob: NodeBlob) {
+    try {
+      const base64 = Buffer.from(await blob.arrayBuffer()).toString('base64')
+      this.result = `data:${blob.type || 'application/octet-stream'};base64,${base64}`
+      this.onload?.(new ProgressEvent('load') as ProgressEvent<FileReader>)
+    } catch (error) {
+      this.error = error instanceof DOMException ? error : new DOMException(String(error))
+      this.onerror?.(new ProgressEvent('error') as ProgressEvent<FileReader>)
+    }
+  }
+}
+
+Object.assign(globalThis, { Blob: NodeBlob, File: NodeFile, FileReader: NodeFileReader })
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { Link, MemoryRouter } from 'react-router'
@@ -115,7 +137,13 @@ function MobileAppHarness() {
   )
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await new Promise<void>((resolve, reject) => {
+    const request = indexedDB.deleteDatabase('hermes-mobile-outbox-v1')
+    request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error)
+    request.onblocked = () => reject(new Error('mobile outbox database remained open between tests'))
+  })
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   container = document.createElement('div')
   document.body.append(container)
@@ -228,6 +256,22 @@ async function renderAt(path: string) {
   }
 }
 
+async function waitForReact(assertion: () => unknown) {
+  let lastError: unknown
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    })
+    try {
+      assertion()
+      return
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError
+}
+
 describe('MobileApp', () => {
   it('renders the command-center home with live status, quick chat, and recent work', async () => {
     await renderAt('/mobile')
@@ -307,7 +351,7 @@ describe('MobileApp', () => {
     await act(async () => {
       ;(container.querySelector('button[aria-label="Remove work.txt"]') as HTMLButtonElement).click()
     })
-    await vi.waitFor(() => expect(install.disabled).toBe(false))
+    await waitForReact(() => expect(install.disabled).toBe(false))
   })
 
   it('loads, marks, and dismisses durable notifications within the selected profile', async () => {
@@ -616,7 +660,7 @@ describe('MobileApp', () => {
       await Promise.resolve()
     })
 
-    await vi.waitFor(() => {
+    await waitForReact(() => {
       expect(apiMocks.getSessions).toHaveBeenLastCalledWith(30, 0, { archived: 'only', order: 'recent', profile: '' })
     })
     expect(container.textContent).toContain('Archived conversation')
@@ -759,7 +803,7 @@ describe('MobileApp', () => {
 
     profileMocks.profile = 'mabel'
     await renderAt('/mobile/chats')
-    await vi.waitFor(() => expect(container.textContent).toContain('Mabel conversation'))
+    await waitForReact(() => expect(container.textContent).toContain('Mabel conversation'))
     await act(async () => {
       resolveOldPage({
         limit: 30,
@@ -822,8 +866,8 @@ describe('MobileApp', () => {
     })
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-      await vi.waitFor(() => {
-        expect(gatewayMocks.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(true)
+      await waitForReact(() => {
+        if (!gatewayMocks.request.mock.calls.some(([method]) => method === 'prompt.submit')) throw new Error(container.textContent || 'empty')
       })
     })
 
@@ -869,7 +913,7 @@ describe('MobileApp', () => {
     })
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-      await vi.waitFor(() => {
+      await waitForReact(() => {
         expect(gatewayMocks.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(true)
       })
     })
@@ -919,7 +963,7 @@ describe('MobileApp', () => {
     })
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-      await vi.waitFor(() => {
+      await waitForReact(() => {
         expect(gatewayMocks.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(true)
       })
     })
@@ -970,18 +1014,20 @@ describe('MobileApp', () => {
       const form = container.querySelector('form') as HTMLFormElement
       await act(async () => {
         form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-        await vi.waitFor(() => expect(container.querySelector('button[aria-label="Cancel cancel-me.txt"]')).not.toBeNull())
       })
+      await waitForReact(() => expect(container.querySelector('button[aria-label="Cancel cancel-me.txt"]')).not.toBeNull())
       await act(async () => {
         ;(container.querySelector('button[aria-label="Cancel cancel-me.txt"]') as HTMLButtonElement).click()
         finishRead()
         await Promise.resolve()
       })
 
-      expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'session.create')).toHaveLength(0)
-      expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'file.attach')).toHaveLength(0)
-      expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(0)
-      expect(container.querySelectorAll('.mobile-bubble.is-user')).toHaveLength(0)
+      await waitForReact(() => {
+        expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'session.create')).toHaveLength(0)
+        expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'file.attach')).toHaveLength(0)
+        expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(0)
+        expect(container.querySelectorAll('.mobile-bubble.is-user')).toHaveLength(0)
+      })
     } finally {
       Object.defineProperty(globalThis, 'FileReader', { configurable: true, value: originalFileReader })
     }
@@ -1015,9 +1061,9 @@ describe('MobileApp', () => {
       const form = container.querySelector('form') as HTMLFormElement
       await act(async () => {
         form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-        await vi.waitFor(() => expect(pendingReads).toHaveLength(1))
+        await waitForReact(() => expect(pendingReads).toHaveLength(1))
         pendingReads[0]()
-        await vi.waitFor(() => expect(pendingReads).toHaveLength(2))
+        await waitForReact(() => expect(pendingReads).toHaveLength(2))
       })
       await act(async () => {
         ;(container.querySelector('button[aria-label="Cancel first.txt"]') as HTMLButtonElement).click()
@@ -1026,10 +1072,12 @@ describe('MobileApp', () => {
         await Promise.resolve()
       })
 
-      expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'session.create')).toHaveLength(0)
-      expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'file.attach')).toHaveLength(0)
-      expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(0)
-      expect(container.querySelectorAll('.mobile-bubble.is-user')).toHaveLength(0)
+      await waitForReact(() => {
+        expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'session.create')).toHaveLength(0)
+        expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'file.attach')).toHaveLength(0)
+        expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(0)
+        expect(container.querySelectorAll('.mobile-bubble.is-user')).toHaveLength(0)
+      })
     } finally {
       Object.defineProperty(globalThis, 'FileReader', { configurable: true, value: originalFileReader })
     }
@@ -1056,7 +1104,7 @@ describe('MobileApp', () => {
 
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-      await vi.waitFor(() => expect(gatewayMocks.request.mock.calls.some(([method]) => method === 'file.attach')).toBe(true))
+      await waitForReact(() => expect(gatewayMocks.request.mock.calls.some(([method]) => method === 'file.attach')).toBe(true))
     })
     expect(picker.disabled).toBe(true)
     expect((container.querySelector('button[aria-label="Add attachment"]') as HTMLButtonElement).disabled).toBe(true)
@@ -1069,9 +1117,11 @@ describe('MobileApp', () => {
       await Promise.resolve()
     })
 
-    expect(container.textContent).toContain('first.txt')
-    expect(container.textContent).toContain('second.txt')
-    expect(container.textContent).toContain('upload failed')
+    await waitForReact(() => {
+      expect(container.textContent).toContain('first.txt')
+      expect(container.textContent).toContain('second.txt')
+      expect(container.textContent).toContain('upload failed')
+    })
   })
 
   it('allows drafting while the gateway connects and queues the message safely', async () => {
@@ -1091,7 +1141,7 @@ describe('MobileApp', () => {
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     })
-    expect(container.textContent).toContain('Queued until Hermes reconnects')
+    await waitForReact(() => expect(container.textContent).toContain('Queued until Hermes reconnects'))
     expect(gatewayMocks.request).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
 
     await act(async () => {
@@ -1100,18 +1150,21 @@ describe('MobileApp', () => {
       await Promise.resolve()
     })
     expect(gatewayMocks.request).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+    await waitForReact(() => {
+      expect(container.textContent).toContain('Connected to Desktop')
+      expect(container.querySelector('button[aria-label="Review queued message"]')).not.toBeNull()
+    })
     const reviewQueued = container.querySelector('button[aria-label="Review queued message"]') as HTMLButtonElement
-    expect(reviewQueued).not.toBeNull()
     await act(async () => reviewQueued.click())
     expect(textarea.value).toBe('Queue this safely')
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
       await Promise.resolve()
     })
-    expect(gatewayMocks.request).toHaveBeenCalledWith(
+    await waitForReact(() => expect(gatewayMocks.request).toHaveBeenCalledWith(
       'prompt.submit',
       expect.objectContaining({ text: 'Queue this safely' })
-    )
+    ))
   })
 
   it('persists unsent drafts across mobile route changes', async () => {
@@ -1128,7 +1181,7 @@ describe('MobileApp', () => {
     expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Keep this draft')
   })
 
-  it('restores the typed prompt when sending fails', async () => {
+  it('marks an uncertain prompt submission for review without restoring it for automatic retry', async () => {
     gatewayMocks.request.mockImplementation(async (method: string) => {
       if (method === 'session.create') return { session_id: 'runtime-1', stored_session_id: 'stored-1' }
       if (method === 'prompt.submit') throw new Error('Connection lost')
@@ -1149,9 +1202,13 @@ describe('MobileApp', () => {
       await Promise.resolve()
     })
 
-    expect(textarea.value).toBe('Do not lose this prompt')
-    expect(container.textContent).toContain('Connection lost')
-    expect(container.querySelectorAll('.mobile-bubble.is-user')).toHaveLength(0)
+    await waitForReact(() => {
+      expect(textarea.value).toBe('')
+      expect(container.textContent).toContain('Connection lost')
+      expect(container.textContent).toContain('Needs review: Hermes may already have received this message.')
+      expect(container.querySelector('button[aria-label="Review message with uncertain delivery"]')).not.toBeNull()
+      expect(container.querySelectorAll('.mobile-bubble.is-user')).toHaveLength(0)
+    })
   })
 
   it('keeps offline drafting available after the gateway closes without sending prematurely', async () => {
@@ -1391,8 +1448,10 @@ describe('MobileApp', () => {
       await Promise.resolve()
     })
 
-    expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'session.create')).toHaveLength(1)
-    expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(1)
+    await waitForReact(() => {
+      expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'session.create')).toHaveLength(1)
+      expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(1)
+    })
 
     releasePrompt()
     await act(async () => pendingPrompt)
@@ -1760,7 +1819,7 @@ describe('MobileApp', () => {
       await Promise.resolve()
     })
 
-    expect(gatewayMocks.request).toHaveBeenCalledWith('session.create', expect.objectContaining({ profile: 'mabel' }))
+    await waitForReact(() => expect(gatewayMocks.request).toHaveBeenCalledWith('session.create', expect.objectContaining({ profile: 'mabel' })))
   })
 
   it('refreshes conversations after creating a chat so it appears when returning to Chats', async () => {
@@ -1803,15 +1862,16 @@ describe('MobileApp', () => {
       await Promise.resolve()
     })
 
-    await vi.waitFor(() => {
+    await waitForReact(() => {
       expect(container.querySelector('button[aria-label="Go back"]')).not.toBeNull()
+      expect(apiMocks.getSessions.mock.calls.length).toBeGreaterThanOrEqual(2)
     })
     await act(async () => {
       const back = container.querySelector('button[aria-label="Go back"]') as HTMLButtonElement
       back.click()
       await Promise.resolve()
     })
-    await vi.waitFor(() => expect(container.textContent).toContain('Fresh mobile chat'))
+    await waitForReact(() => expect(container.textContent).toContain('Fresh mobile chat'))
     expect(apiMocks.getSessions.mock.calls.length).toBeGreaterThanOrEqual(2)
     expect(apiMocks.getStatus).toHaveBeenCalledTimes(1)
     expect(apiMocks.getCronJobs).toHaveBeenCalledTimes(1)
@@ -1902,8 +1962,8 @@ describe('MobileApp', () => {
       routeSwitch.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
       await Promise.resolve()
     })
-    await vi.waitFor(() => expect(apiMocks.getSessionMessages).toHaveBeenCalledWith('session-b', ''))
-    await vi.waitFor(() => expect(container.textContent).toContain('History from B'))
+    await waitForReact(() => expect(apiMocks.getSessionMessages).toHaveBeenCalledWith('session-b', ''))
+    await waitForReact(() => expect(container.textContent).toContain('History from B'))
 
     expect(apiMocks.getSessionMessages).toHaveBeenCalledWith('session-b', '')
     expect(container.textContent).not.toContain('History from A')
@@ -2047,9 +2107,9 @@ describe('MobileApp', () => {
       await Promise.resolve()
     })
 
-    expect(gatewayMocks.request).toHaveBeenCalledWith(
+    await waitForReact(() => expect(gatewayMocks.request).toHaveBeenCalledWith(
       'prompt.submit',
       expect.objectContaining({ session_id: 'runtime-b', text: 'Must go to B' })
-    )
+    ))
   })
 })
