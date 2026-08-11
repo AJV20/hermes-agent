@@ -1608,6 +1608,42 @@ describe('MobileApp', () => {
     expect(container.textContent).toContain('destination command')
   })
 
+  it('rehydrates the next server-queued approval after responding to the resumed FIFO head', async () => {
+    let resumeCount = 0
+    gatewayMocks.request.mockImplementation(async (method: string) => {
+      if (method === 'session.resume') {
+        resumeCount += 1
+        const command = resumeCount === 1 ? 'queued command A' : resumeCount === 2 ? 'queued command B' : null
+        return {
+          ...(command ? {
+            pending_prompt: {
+              payload: { allow_permanent: false, choices: ['once', 'deny'], command },
+              type: 'approval.request'
+            }
+          } : {}),
+          session_id: 'runtime-queued-actions'
+        }
+      }
+      return {}
+    })
+    await renderAt('/mobile/chat/session-1')
+    expect(container.textContent).toContain('queued command A')
+
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Run once"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(container.textContent).toContain('queued command B'))
+
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Run once"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'approval.respond')).toHaveLength(2)
+  })
+
   it('answers queued actions in the same FIFO order the backend resolves them', async () => {
     let finishFirstResponse!: () => void
     const firstResponse = new Promise<void>(resolve => { finishFirstResponse = resolve })

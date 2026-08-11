@@ -561,7 +561,22 @@ export function ChatScreen({
       await gateway.request('approval.respond', { choice: response.choice, session_id: response.sessionId })
     }
     setActions(current => completeMobileAction(current, respondedAction))
-  }, [actions.pending, gateway])
+    if (actions.queued.length === 0) {
+      const resumableId = pendingStoredId.current || (!isNew ? storedSessionId : null)
+      if (resumableId) {
+        const resumed = await gateway.request<MobileResumeSnapshot>('session.resume', {
+          cols: 48,
+          omit_messages: true,
+          ...(profile ? { profile } : {}),
+          session_id: resumableId,
+          source: 'web'
+        })
+        if (resumed.session_id === runtimeId.current) {
+          setActions(current => current.pending ? current : hydrateMobileActionResume(current, resumed))
+        }
+      }
+    }
+  }, [actions.pending, actions.queued.length, gateway, isNew, profile, storedSessionId])
 
   const stopResponse = useCallback(async () => {
     if (!runtimeId.current) return
