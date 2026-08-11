@@ -14,6 +14,7 @@ export interface MobileOutboxOperation {
   operationId: string
   ownerId?: string | null
   profile: string
+  revision: number
   state: MobileOutboxState
   storedSessionId: string
   text: string
@@ -22,24 +23,24 @@ export interface MobileOutboxOperation {
 }
 
 export interface MobileOutboxStore {
-  claim(operationId: string, ownerId: string, leaseMs?: number): Promise<MobileOutboxOperation>
+  claim(operationId: string, expectedRevision: number, ownerId: string, leaseMs?: number): Promise<MobileOutboxOperation>
   close(): void
-  complete(operationId: string, ownerId: string): Promise<void>
+  complete(operationId: string, expectedRevision: number, ownerId: string): Promise<void>
   createReady(input: Pick<MobileOutboxOperation, 'attachments' | 'profile' | 'storedSessionId' | 'text'>): Promise<MobileOutboxOperation>
   destroy(): Promise<void>
-  failClaim(operationId: string, ownerId: string, state: 'READY' | 'AMBIGUOUS' | 'FAILED'): Promise<MobileOutboxOperation>
+  failClaim(operationId: string, expectedRevision: number, ownerId: string, state: 'READY' | 'AMBIGUOUS' | 'FAILED'): Promise<MobileOutboxOperation>
   list(profile: string, storedSessionId: string): Promise<MobileOutboxOperation[]>
-  rekey(operationId: string, storedSessionId: string, ownerId?: string): Promise<MobileOutboxOperation>
-  remove(operationId: string, ownerId?: string): Promise<void>
-  replaceReady(operationId: string, input: Pick<MobileOutboxOperation, 'attachments' | 'profile' | 'storedSessionId' | 'text'>): Promise<MobileOutboxOperation>
-  transition(operationId: string, state: MobileOutboxState): Promise<void>
+  rekey(operationId: string, expectedRevision: number, storedSessionId: string, ownerId?: string): Promise<MobileOutboxOperation>
+  remove(operationId: string, expectedRevision: number, ownerId?: string): Promise<void>
+  replaceReady(operationId: string, expectedRevision: number, input: Pick<MobileOutboxOperation, 'attachments' | 'profile' | 'storedSessionId' | 'text'>): Promise<MobileOutboxOperation>
+  transition(operationId: string, expectedRevision: number, state: MobileOutboxState): Promise<void>
   unsafePutForTest(value: unknown): Promise<void>
 }
 
 export class MobileOutboxError extends Error {
-  readonly code: 'CORRUPT' | 'LIMIT_EXCEEDED' | 'QUOTA' | 'UNAVAILABLE'
+  readonly code: 'CONFLICT' | 'CORRUPT' | 'LIMIT_EXCEEDED' | 'QUOTA' | 'UNAVAILABLE'
 
-  constructor(code: 'CORRUPT' | 'LIMIT_EXCEEDED' | 'QUOTA' | 'UNAVAILABLE', message: string) {
+  constructor(code: 'CONFLICT' | 'CORRUPT' | 'LIMIT_EXCEEDED' | 'QUOTA' | 'UNAVAILABLE', message: string) {
     super(message)
     this.code = code
     this.name = 'MobileOutboxError'
@@ -106,8 +107,12 @@ function validate(value: unknown): asserts value is MobileOutboxOperation {
   const operation = value as Partial<MobileOutboxOperation>
   if (!operation || operation.version !== 1 || typeof operation.operationId !== 'string' || typeof operation.profile !== 'string'
     || typeof operation.storedSessionId !== 'string' || typeof operation.text !== 'string' || !validState(operation.state)
+    || !Number.isInteger(operation.revision) || (operation.revision ?? 0) < 1
     || (operation.ownerId != null && typeof operation.ownerId !== 'string')
-    || (operation.leaseExpiresAt != null && typeof operation.leaseExpiresAt !== 'number')
+    || (operation.leaseExpiresAt != null && (!Number.isFinite(operation.leaseExpiresAt) || operation.leaseExpiresAt <= 0))
+    || (operation.state === 'SUBMITTING'
+      ? !operation.ownerId || operation.leaseExpiresAt == null
+      : operation.ownerId != null || operation.leaseExpiresAt != null)
     || !Array.isArray(operation.attachments) || !operation.attachments.every(item => item && isBlob(item.blob)
       && typeof item.name === 'string' && typeof item.type === 'string' && typeof item.lastModified === 'number')) {
     throw new MobileOutboxError('CORRUPT', 'A saved message could not be validated. It was not changed.')
@@ -170,6 +175,7 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
           ...operation,
           leaseExpiresAt: null,
           ownerId: null,
+          revision: operation.revision + 1,
           state: 'AMBIGUOUS',
           updatedAt: now
         }
@@ -185,7 +191,7 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
 
   const createReady = async (input: Pick<MobileOutboxOperation, 'attachments' | 'profile' | 'storedSessionId' | 'text'>) => {
     const now = Date.now()
-    const operation: MobileOutboxOperation = { ...input, createdAt: now, operationId: operationId(), state: 'READY', updatedAt: now, version: 1 }
+    const operation: MobileOutboxOperation = { ...input, createdAt: now, operationId: operationId(), revision: 1, state: 'READY', updatedAt: now, version: 1 }
     validate(operation)
     if (byteSize(operation) > maxItemBytes) throw new MobileOutboxError('LIMIT_EXCEEDED', 'This message is too large to save for reload.')
     const db = await open()
@@ -210,24 +216,30 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
     }
   }
 
-  const transition = async (id: string, state: MobileOutboxState) => {
+  const transition = async (id: string, expectedRevision: number, state: MobileOutboxState) => {
     const db = await open()
     const tx = db.transaction(STORE, 'readwrite')
     const done = transactionDone(tx)
     const store = tx.objectStore(STORE)
     const operation = await request(store.get(id))
     validate(operation)
+    if (operation.revision !== expectedRevision) {
+      tx.abort()
+      await done.catch(() => undefined)
+      throw new MobileOutboxError('CONFLICT', 'This saved message changed in another tab. Review the latest version.')
+    }
     if (!ALLOWED_TRANSITIONS[operation.state].includes(state)) {
       tx.abort()
       await done.catch(() => undefined)
       throw new MobileOutboxError('CORRUPT', `Cannot transition a saved message from ${operation.state} to ${state}.`)
     }
-    store.put({ ...operation, state, updatedAt: Date.now() })
+    store.put({ ...operation, revision: operation.revision + 1, state, updatedAt: Date.now() })
     await done
   }
 
   const rewrite = async (
     id: string,
+    expectedRevision: number,
     update: (operation: MobileOutboxOperation) => MobileOutboxOperation
   ) => {
     const db = await open()
@@ -236,7 +248,13 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
     const store = tx.objectStore(STORE)
     const operation = await request(store.get(id))
     validate(operation)
-    const rewritten = update(operation)
+    if (operation.revision !== expectedRevision) {
+      tx.abort()
+      await done.catch(() => undefined)
+      throw new MobileOutboxError('CONFLICT', 'This saved message changed in another tab. Review the latest version.')
+    }
+    const candidate = update(operation)
+    const rewritten = { ...candidate, revision: operation.revision + 1 }
     validate(rewritten)
     const existing = await request(store.getAll())
     existing.forEach(validate)
@@ -253,7 +271,7 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
     return rewritten
   }
 
-  const claim = (id: string, ownerId: string, leaseMs = 31 * 60 * 1000) => rewrite(id, operation => {
+  const claim = (id: string, expectedRevision: number, ownerId: string, leaseMs = 31 * 60 * 1000) => rewrite(id, expectedRevision, operation => {
     if (!ownerId || !['READY', 'AMBIGUOUS', 'FAILED', 'DRAFT'].includes(operation.state)) {
       throw new MobileOutboxError('CORRUPT', 'This saved message is already owned by another send.')
     }
@@ -261,20 +279,25 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
     return { ...operation, leaseExpiresAt: now + Math.max(1, leaseMs), ownerId, state: 'SUBMITTING', updatedAt: now }
   })
 
-  const failClaim = (id: string, ownerId: string, state: 'READY' | 'AMBIGUOUS' | 'FAILED') => rewrite(id, operation => {
+  const failClaim = (id: string, expectedRevision: number, ownerId: string, state: 'READY' | 'AMBIGUOUS' | 'FAILED') => rewrite(id, expectedRevision, operation => {
     if (operation.state !== 'SUBMITTING' || operation.ownerId !== ownerId) {
       throw new MobileOutboxError('CORRUPT', 'This saved message is owned by another send.')
     }
     return { ...operation, leaseExpiresAt: null, ownerId: null, state, updatedAt: Date.now() }
   })
 
-  const complete = async (id: string, ownerId: string) => {
+  const complete = async (id: string, expectedRevision: number, ownerId: string) => {
     const db = await open()
     const tx = db.transaction(STORE, 'readwrite')
     const done = transactionDone(tx)
     const store = tx.objectStore(STORE)
     const operation = await request(store.get(id))
     validate(operation)
+    if (operation.revision !== expectedRevision) {
+      tx.abort()
+      await done.catch(() => undefined)
+      throw new MobileOutboxError('CONFLICT', 'This saved message changed in another tab. Review the latest version.')
+    }
     if (operation.state !== 'SUBMITTING' || operation.ownerId !== ownerId) {
       tx.abort()
       await done.catch(() => undefined)
@@ -284,7 +307,7 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
     await done
   }
 
-  const remove = async (id: string, ownerId?: string) => {
+  const remove = async (id: string, expectedRevision: number, ownerId?: string) => {
     const db = await open()
     const tx = db.transaction(STORE, 'readwrite')
     const done = transactionDone(tx)
@@ -292,6 +315,11 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
     const operation = await request(store.get(id))
     if (operation !== undefined) {
       validate(operation)
+      if (operation.revision !== expectedRevision) {
+        tx.abort()
+        await done.catch(() => undefined)
+        throw new MobileOutboxError('CONFLICT', 'This saved message changed in another tab. Review the latest version.')
+      }
       if (operation.state === 'SUBMITTING' && operation.ownerId !== ownerId) {
         tx.abort()
         await done.catch(() => undefined)
@@ -322,7 +350,7 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
     },
     failClaim,
     list,
-    rekey: (id, storedSessionId, ownerId) => rewrite(id, operation => {
+    rekey: (id, expectedRevision, storedSessionId, ownerId) => rewrite(id, expectedRevision, operation => {
       if (operation.state === 'SUBMITTING' && operation.ownerId !== ownerId) {
         throw new MobileOutboxError('CORRUPT', 'This saved message is owned by another send.')
       }
@@ -333,7 +361,7 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
       }
     }),
     remove,
-    replaceReady: (id, input) => rewrite(id, operation => {
+    replaceReady: (id, expectedRevision, input) => rewrite(id, expectedRevision, operation => {
       if (!['READY', 'AMBIGUOUS', 'FAILED', 'DRAFT'].includes(operation.state)
         || operation.profile !== input.profile || operation.storedSessionId !== input.storedSessionId) {
         throw new MobileOutboxError('CORRUPT', 'This saved message is already owned by another send or scope.')

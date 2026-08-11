@@ -370,12 +370,19 @@ export function ChatScreen({
         text
       }
       if ((!text && !pendingAttachments.length) || (chat.busy && !expiredClarify) || submitInFlight.current) return
+      const reviewRevision = reviewOperationId
+        ? recoveryOperations.find(operation => operation.operationId === reviewOperationId)?.revision
+        : undefined
+      if (reviewOperationId && reviewRevision === undefined) {
+        setOutboxNotice('This saved message changed in another tab. Reload and review the latest version.')
+        return
+      }
       submitInFlight.current = true
       if (!ready) {
         setOutboxNotice('Saving message for safe delivery…')
         try {
           const operation = reviewOperationId
-            ? await outbox.replaceReady(reviewOperationId, durableInput)
+            ? await outbox.replaceReady(reviewOperationId, reviewRevision!, durableInput)
             : await outbox.createReady(durableInput)
           setRecoveryOperations(current => [
             ...current.filter(item => item.operationId !== operation.operationId),
@@ -396,7 +403,7 @@ export function ChatScreen({
       setOutboxNotice('Saving message for safe delivery…')
       try {
         persistedOperation = reviewOperationId
-          ? await outbox.replaceReady(reviewOperationId, durableInput)
+          ? await outbox.replaceReady(reviewOperationId, reviewRevision!, durableInput)
           : await outbox.createReady(durableInput)
       } catch (error) {
         submitInFlight.current = false
@@ -448,7 +455,7 @@ export function ChatScreen({
       let requestDispatched = false
       let claimAcquired = false
       try {
-        persistedOperation = await outbox.claim(persistedOperation.operationId, outboxOwnerId.current)
+        persistedOperation = await outbox.claim(persistedOperation.operationId, persistedOperation.revision, outboxOwnerId.current)
         claimAcquired = true
         const preparedAttachments: Array<{ attachment: MobileAttachment; dataUrl: string }> = []
         for (const attachment of pendingAttachments) {
@@ -463,7 +470,7 @@ export function ChatScreen({
           ({ attachment }) => !canceledAttachmentIds.current.has(attachment.id)
         )
         if (!text && !sendableAttachments.length) {
-          await outbox.remove(persistedOperation.operationId, outboxOwnerId.current)
+          await outbox.remove(persistedOperation.operationId, persistedOperation.revision, outboxOwnerId.current)
           dropCanceledSubmission()
           return
         }
@@ -490,7 +497,7 @@ export function ChatScreen({
           runtimeId.current = sid
           const durableStoredId = created.stored_session_id || sid
           pendingStoredId.current = durableStoredId
-          persistedOperation = await outbox.rekey(persistedOperation.operationId, durableStoredId, outboxOwnerId.current)
+          persistedOperation = await outbox.rekey(persistedOperation.operationId, persistedOperation.revision, durableStoredId, outboxOwnerId.current)
         }
         const fileRefs: string[] = []
         let attachedCount = 0
@@ -525,14 +532,14 @@ export function ChatScreen({
           ))
         }
         if (!text && attachedCount === 0) {
-          await outbox.remove(persistedOperation.operationId, outboxOwnerId.current)
+          await outbox.remove(persistedOperation.operationId, persistedOperation.revision, outboxOwnerId.current)
           dropCanceledSubmission()
           return
         }
         const promptText = [...fileRefs, text].filter(Boolean).join('\n\n')
         requestDispatched = true
         await gateway.request('prompt.submit', { session_id: sid, text: promptText }, PROMPT_TIMEOUT_MS)
-        await outbox.complete(persistedOperation.operationId, outboxOwnerId.current)
+        await outbox.complete(persistedOperation.operationId, persistedOperation.revision, outboxOwnerId.current)
         if (submitGeneration.current !== generation) return
         releaseSubmission()
         setRecoveryOperations(current => current.filter(item => item.operationId !== persistedOperation.operationId))
@@ -555,7 +562,7 @@ export function ChatScreen({
         let recoveryUpdated = false
         if (claimAcquired) {
           try {
-            persistedOperation = await outbox.failClaim(persistedOperation.operationId, outboxOwnerId.current, recoveryState)
+            persistedOperation = await outbox.failClaim(persistedOperation.operationId, persistedOperation.revision, outboxOwnerId.current, recoveryState)
             recoveryUpdated = true
           } catch { /* another context cannot be overwritten by this stale sender */ }
         }
@@ -583,7 +590,7 @@ export function ChatScreen({
         }))
       }
     },
-    [attachments, chat.busy, draft, expiredClarify, gateway, navigate, onSessionCreated, outbox, profile, ready, reviewOperationId, storedSessionId]
+    [attachments, chat.busy, draft, expiredClarify, gateway, navigate, onSessionCreated, outbox, profile, ready, recoveryOperations, reviewOperationId, storedSessionId]
   )
 
   const selectAttachments = useCallback((files: FileList | File[]) => {
@@ -771,7 +778,7 @@ export function ChatScreen({
                 if (operation.state === 'AMBIGUOUS') { setChat(current => ({ ...current, error: 'Review this message before sending; Hermes may already have received it.' })); return }
                 reviewSavedOperation(operation)
               }} type="button">Send</button>
-              <button aria-label="Discard saved message" onClick={() => void outbox.remove(operation.operationId).then(() => {
+              <button aria-label="Discard saved message" onClick={() => void outbox.remove(operation.operationId, operation.revision).then(() => {
                 setRecoveryOperations(current => current.filter(item => item.operationId !== operation.operationId))
                 setReviewOperationId(current => current === operation.operationId ? null : current)
               })} type="button">Discard</button>

@@ -87,6 +87,7 @@ describe('MobileOutboxStore', () => {
       createdAt: 1,
       operationId: 'bad-blob',
       profile: 'default',
+      revision: 1,
       state: 'READY',
       storedSessionId: 'session-a',
       text: 'attachment',
@@ -101,8 +102,8 @@ describe('MobileOutboxStore', () => {
   it('marks incomplete submission recovery as ambiguous and never replays it', async () => {
     const outbox = store()
     const item = await outbox.createReady({ attachments: [], profile: 'default', storedSessionId: 'session-a', text: 'do not replay' })
-    await outbox.claim(item.operationId, 'owner-a')
-    await outbox.failClaim(item.operationId, 'owner-a', 'AMBIGUOUS')
+    const claimed = await outbox.claim(item.operationId, item.revision, 'owner-a')
+    await outbox.failClaim(item.operationId, claimed.revision, 'owner-a', 'AMBIGUOUS')
 
     const recovered = await outbox.list('default', 'session-a')
     expect(recovered[0].state).toBe('AMBIGUOUS')
@@ -150,14 +151,14 @@ describe('MobileOutboxStore', () => {
     const firstTab = store()
     const secondTab = store()
     const item = await firstTab.createReady({ attachments: [], profile: 'default', storedSessionId: 'session-a', text: 'one send only' })
-    await firstTab.claim(item.operationId, 'owner-a')
+    const claimed = await firstTab.claim(item.operationId, item.revision, 'owner-a')
 
-    await expect(secondTab.claim(item.operationId, 'owner-b')).rejects.toMatchObject({ code: 'CORRUPT' })
-    await expect(secondTab.failClaim(item.operationId, 'owner-b', 'READY')).rejects.toMatchObject({ code: 'CORRUPT' })
-    await expect(secondTab.remove(item.operationId, 'owner-b')).rejects.toMatchObject({ code: 'CORRUPT' })
+    await expect(secondTab.claim(item.operationId, item.revision, 'owner-b')).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(secondTab.failClaim(item.operationId, item.revision, 'owner-b', 'READY')).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(secondTab.remove(item.operationId, item.revision, 'owner-b')).rejects.toMatchObject({ code: 'CONFLICT' })
     await expect(secondTab.list('default', 'session-a')).resolves.toEqual([])
 
-    await firstTab.complete(item.operationId, 'owner-a')
+    await firstTab.complete(item.operationId, claimed.revision, 'owner-a')
     await expect(firstTab.list('default', 'session-a')).resolves.toEqual([])
   })
 
@@ -165,17 +166,45 @@ describe('MobileOutboxStore', () => {
     const firstTab = store()
     const secondTab = store()
     const item = await firstTab.createReady({ attachments: [], profile: 'default', storedSessionId: 'session-a', text: 'review after crash' })
-    await firstTab.claim(item.operationId, 'owner-a', 1)
+    await firstTab.claim(item.operationId, item.revision, 'owner-a', 1)
     await new Promise(resolve => setTimeout(resolve, 2))
 
     await expect(secondTab.list('default', 'session-a')).resolves.toMatchObject([{ state: 'AMBIGUOUS', ownerId: null }])
+  })
+
+  it('rejects a stale tab edit instead of overwriting the latest reviewed bytes', async () => {
+    const firstTab = store()
+    const secondTab = store()
+    const item = await firstTab.createReady({ attachments: [], profile: 'default', storedSessionId: 'session-a', text: 'original' })
+    const firstEdit = await firstTab.replaceReady(item.operationId, item.revision, {
+      attachments: [], profile: 'default', storedSessionId: 'session-a', text: 'latest reviewed edit'
+    })
+
+    await expect(secondTab.replaceReady(item.operationId, item.revision, {
+      attachments: [], profile: 'default', storedSessionId: 'session-a', text: 'stale overwrite'
+    })).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(firstTab.list('default', 'session-a')).resolves.toMatchObject([
+      { revision: firstEdit.revision, text: 'latest reviewed edit' }
+    ])
+  })
+
+  it('fails closed for a submitting record without a durable owner lease', async () => {
+    const outbox = store()
+    await outbox.unsafePutForTest({
+      attachments: [], createdAt: 1, leaseExpiresAt: null, operationId: 'malformed-claim', ownerId: null,
+      profile: 'default', revision: 1, state: 'SUBMITTING', storedSessionId: 'session-a', text: 'do not mutate',
+      updatedAt: 1, version: 1
+    })
+
+    await expect(outbox.list('default', 'session-a')).rejects.toMatchObject({ code: 'CORRUPT' })
+    await expect(outbox.list('default', 'session-a')).rejects.toMatchObject({ code: 'CORRUPT' })
   })
 
   it('rejects impossible state transitions without changing the saved operation', async () => {
     const outbox = store()
     const item = await outbox.createReady({ attachments: [], profile: 'default', storedSessionId: 'session-a', text: 'safe state' })
 
-    await expect(outbox.transition(item.operationId, 'SENT')).rejects.toMatchObject({ code: 'CORRUPT' })
+    await expect(outbox.transition(item.operationId, item.revision, 'SENT')).rejects.toMatchObject({ code: 'CORRUPT' })
     await expect(outbox.list('default', 'session-a')).resolves.toMatchObject([{ state: 'READY' }])
   })
 })
