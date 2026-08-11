@@ -1428,6 +1428,14 @@
 .mobile-attachment-copy small {
   color: var(--mobile-muted);
 }
+@media (max-width: 22rem) {
+  .mobile-quick-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .mobile-quick-action {
+    min-height: 5.75rem;
+  }
+}
 @media (min-width: 48rem) {
   .mobile-app-shell {
     width: min(100%, 64rem);

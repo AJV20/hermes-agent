@@ -94,6 +94,10 @@ describe('mobile bottom navigation layout', () => {
     expect(sheetAction).toContain('width: 100%')
   })
 
+  it('uses two-column quick actions on very narrow phones so action labels do not wrap into cramped tiles', () => {
+    expect(styles).toMatch(/@media \(max-width: 22rem\) \{[\s\S]*?\.mobile-quick-grid\s*\{[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)[\s\S]*?\.mobile-quick-action\s*\{[\s\S]*?min-height: 5\.75rem/)
+  })
+
   it('keeps Codex quota readable and full-width when the provider returns one window', () => {
     const singleWindow = styles.match(/\.mobile-codex-quota-window:only-child\s*\{([^}]*)\}/)?.[1] ?? ''
     const refreshButton = styles.match(/\.mobile-codex-quota-icon,\s*\.mobile-codex-quota-heading button\s*\{([^}]*)\}/)?.[1] ?? ''

@@ -4,13 +4,15 @@ import { describe, expect, it } from 'vitest'
 import { buildServiceWorkerUrl } from './pwa'
 
 describe('PWA mobile shell', () => {
-  it('allows viewport zooming while retaining the mobile safe-area viewport', () => {
-    const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8')
-    const viewport = html.match(/<meta\s+name="viewport"\s+content="([^"]+)"/s)?.[1]
+  it('disables browser viewport zooming while retaining the mobile safe-area viewport', () => {
+    for (const documentUrl of [new URL('../index.html', import.meta.url), new URL('../public/offline.html', import.meta.url)]) {
+      const html = readFileSync(documentUrl, 'utf8')
+      const viewport = html.match(/<meta\s+name="viewport"\s+content="([^"]+)"/s)?.[1]
 
-    expect(viewport).toContain('viewport-fit=cover')
-    expect(viewport).not.toContain('maximum-scale')
-    expect(viewport).not.toContain('user-scalable')
+      expect(viewport).toContain('viewport-fit=cover')
+      expect(viewport).toContain('maximum-scale=1')
+      expect(viewport).toContain('user-scalable=no')
+    }
   })
 
   it('allows iPad installations to rotate between portrait and landscape', () => {
