@@ -552,13 +552,18 @@ export function ChatScreen({
 
   const respondToAction = useCallback(async (response: (
     | { answer: string; kind: 'clarify'; requestId: string }
-    | { choice: 'always' | 'deny' | 'once' | 'session'; kind: 'approval'; sessionId: string }
+    | { choice: 'always' | 'deny' | 'once' | 'session'; kind: 'approval'; requestId: string; sessionId: string }
   )) => {
     const respondedAction = actions.pending
+    if (!respondedAction || respondedAction.kind !== response.kind) throw new Error('This action is no longer current.')
     if (response.kind === 'clarify') {
       await gateway.request('clarify.respond', { answer: response.answer, request_id: response.requestId })
     } else {
-      await gateway.request('approval.respond', { choice: response.choice, session_id: response.sessionId })
+      await gateway.request('approval.respond', {
+        choice: response.choice,
+        request_id: response.requestId,
+        session_id: response.sessionId
+      })
     }
     setActions(current => completeMobileAction(current, respondedAction))
     if (actions.queued.length === 0) {

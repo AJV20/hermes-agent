@@ -52,7 +52,8 @@ describe('mobile action projection', () => {
         command: 'rm -rf [REDACTED]',
         description: 'Deletes files',
         choices: ['once', 'deny'],
-        allow_permanent: false
+        allow_permanent: false,
+        request_id: 'approval-1'
       }
     }, 'runtime-1')
 
@@ -62,6 +63,7 @@ describe('mobile action projection', () => {
       choices: ['once', 'deny'],
       command: 'rm -rf [REDACTED]',
       description: 'Deletes files',
+      requestId: 'approval-1',
       sessionId: 'runtime-1',
       status: 'waiting'
     })
@@ -73,7 +75,8 @@ describe('mobile action projection', () => {
       type: 'approval.request',
       payload: {
         choices: ['once', 'always', 'deny'],
-        allow_permanent: false
+        allow_permanent: false,
+        request_id: 'approval-1'
       }
     }, 'runtime-1')
 
@@ -88,12 +91,12 @@ describe('mobile action projection', () => {
     const first = applyMobileActionEvent(EMPTY_MOBILE_ACTIONS, {
       session_id: 'runtime-1',
       type: 'approval.request',
-      payload: { command: 'command A', choices: ['once', 'deny'] }
+      payload: { command: 'command A', choices: ['once', 'deny'], request_id: 'approval-a' }
     }, 'runtime-1')
     const queued = applyMobileActionEvent(first, {
       session_id: 'runtime-1',
       type: 'approval.request',
-      payload: { command: 'command B', choices: ['once', 'deny'] }
+      payload: { command: 'command B', choices: ['once', 'deny'], request_id: 'approval-b' }
     }, 'runtime-1')
 
     expect(queued.pending).toMatchObject({ kind: 'approval', command: 'command A' })
@@ -101,6 +104,22 @@ describe('mobile action projection', () => {
     expect(completeMobileAction(queued, queued.pending).pending).toMatchObject({
       kind: 'approval', command: 'command B'
     })
+  })
+
+  it('deduplicates the same approval projected by resume and a delayed live event', () => {
+    const first = applyMobileActionEvent(EMPTY_MOBILE_ACTIONS, {
+      session_id: 'runtime-1',
+      type: 'approval.request',
+      payload: { command: 'command B', choices: ['once', 'deny'], request_id: 'approval-b' }
+    }, 'runtime-1')
+    const duplicate = applyMobileActionEvent(first, {
+      session_id: 'runtime-1',
+      type: 'approval.request',
+      payload: { command: 'command B', choices: ['once', 'deny'], request_id: 'approval-b' }
+    }, 'runtime-1')
+
+    expect(duplicate).toBe(first)
+    expect(duplicate.queued).toHaveLength(0)
   })
 
   it('never retains sudo or secret request payloads on mobile', () => {

@@ -966,19 +966,21 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    request_id = params.get("request_id")
+    if not isinstance(request_id, str) or not request_id or len(request_id) > 128:
+        return _err(rid, 4002, "A valid approval request_id is required")
     try:
         from tools.approval import resolve_gateway_approval
 
-        return _ok(
-            rid,
-            {
-                "resolved": resolve_gateway_approval(
-                    session["session_key"],
-                    params.get("choice", "deny"),
-                    resolve_all=params.get("all", False),
-                )
-            },
+        resolved = resolve_gateway_approval(
+            session["session_key"],
+            params.get("choice", "deny"),
+            resolve_all=params.get("all", False),
+            expected_request_id=request_id,
         )
+        if resolved == 0:
+            return _err(rid, 4091, "Approval request is no longer the FIFO head")
+        return _ok(rid, {"resolved": resolved})
     except Exception as e:
         return _err(rid, 5004, str(e))
 

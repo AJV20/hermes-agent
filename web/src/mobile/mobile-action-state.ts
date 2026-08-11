@@ -17,6 +17,7 @@ export type MobileApprovalAction = {
   choices: MobileApprovalChoice[]
   command: string
   description: string
+  requestId: string
   sessionId: string
   status: 'submitting' | 'waiting'
 }
@@ -35,7 +36,15 @@ export interface MobileActionState {
 
 export const EMPTY_MOBILE_ACTIONS: MobileActionState = { pending: null, queued: [] }
 
+function actionRequestId(action: MobilePendingAction): string | null {
+  return action.kind === 'sensitive' ? null : action.requestId
+}
+
 function enqueueMobileAction(state: MobileActionState, action: MobilePendingAction): MobileActionState {
+  const requestId = actionRequestId(action)
+  if (requestId && [state.pending, ...state.queued].some(existing => (
+    existing?.kind === action.kind && actionRequestId(existing) === requestId
+  ))) return state
   return state.pending
     ? { ...state, queued: [...state.queued, action] }
     : { pending: action, queued: [] }
@@ -121,7 +130,8 @@ export function applyMobileActionEvent(
 
   if (event.type === 'approval.request') {
     const sessionId = event.session_id || runtimeSessionId || ''
-    if (!sessionId) return state
+    const requestId = typeof payload.request_id === 'string' ? payload.request_id : ''
+    if (!sessionId || !requestId) return state
     const choices = approvalChoices(payload)
     return enqueueMobileAction(state, {
       kind: 'approval',
@@ -129,6 +139,7 @@ export function applyMobileActionEvent(
       choices,
       command: typeof payload.command === 'string' ? payload.command : '',
       description: typeof payload.description === 'string' ? payload.description : '',
+      requestId,
       sessionId,
       status: 'waiting'
     })

@@ -1565,7 +1565,7 @@ describe('MobileApp', () => {
     await renderAt('/mobile/chat/session-1')
 
     await act(async () => gatewayMocks.eventHandler?.({
-      payload: { choices: ['once', 'deny'], command: 'buffered command' },
+      payload: { choices: ['once', 'deny'], command: 'buffered command', request_id: 'approval-buffered' },
       session_id: 'runtime-buffered',
       type: 'approval.request'
     }))
@@ -1595,7 +1595,7 @@ describe('MobileApp', () => {
       await Promise.resolve()
     })
     await act(async () => gatewayMocks.eventHandler?.({
-      payload: { choices: ['once', 'deny'], command: 'destination command' },
+      payload: { choices: ['once', 'deny'], command: 'destination command', request_id: 'approval-destination' },
       session_id: 'runtime-b',
       type: 'approval.request'
     }))
@@ -1617,7 +1617,7 @@ describe('MobileApp', () => {
         return {
           ...(command ? {
             pending_prompt: {
-              payload: { allow_permanent: false, choices: ['once', 'deny'], command },
+              payload: { allow_permanent: false, choices: ['once', 'deny'], command, request_id: `approval-${command.slice(-1)}` },
               type: 'approval.request'
             }
           } : {}),
@@ -1635,6 +1635,16 @@ describe('MobileApp', () => {
       await Promise.resolve()
     })
     await vi.waitFor(() => expect(container.textContent).toContain('queued command B'))
+    await act(async () => gatewayMocks.eventHandler?.({
+      payload: {
+        allow_permanent: false,
+        choices: ['once', 'deny'],
+        command: 'queued command B',
+        request_id: 'approval-B'
+      },
+      session_id: 'runtime-queued-actions',
+      type: 'approval.request'
+    }))
 
     await act(async () => {
       ;(container.querySelector('button[aria-label="Run once"]') as HTMLButtonElement).click()
@@ -1642,6 +1652,7 @@ describe('MobileApp', () => {
       await Promise.resolve()
     })
     expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'approval.respond')).toHaveLength(2)
+    expect(container.textContent).not.toContain('queued command B')
   })
 
   it('answers queued actions in the same FIFO order the backend resolves them', async () => {
@@ -1667,7 +1678,7 @@ describe('MobileApp', () => {
       ;(container.querySelector('button[aria-label="Continue clarification"]') as HTMLButtonElement).click()
     })
     await act(async () => gatewayMocks.eventHandler?.({
-      payload: { choices: ['once', 'deny'], command: 'echo newer' },
+      payload: { choices: ['once', 'deny'], command: 'echo newer', request_id: 'approval-newer' },
       session_id: 'runtime-actions',
       type: 'approval.request'
     }))

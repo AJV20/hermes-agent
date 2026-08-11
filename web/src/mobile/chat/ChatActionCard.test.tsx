@@ -52,7 +52,7 @@ describe('ChatActionCard', () => {
   it('requires explicit confirmation before sending an always approval', async () => {
     const respond = await render({
       allowPermanent: true, choices: ['once', 'session', 'always', 'deny'], command: 'rm -rf /tmp/build',
-      description: 'Remove generated build output', kind: 'approval', sessionId: 'runtime-1', status: 'waiting'
+      description: 'Remove generated build output', kind: 'approval', requestId: 'approval-test', sessionId: 'runtime-1', status: 'waiting'
     })
 
     const always = container.querySelector('button[aria-label="Always allow this command"]') as HTMLButtonElement
@@ -60,13 +60,13 @@ describe('ChatActionCard', () => {
     expect(respond).not.toHaveBeenCalled()
     expect(container.textContent).toContain('Always allow this command?')
     await act(async () => (container.querySelector('button[aria-label="Confirm always allow"]') as HTMLButtonElement).click())
-    expect(respond).toHaveBeenCalledWith({ choice: 'always', kind: 'approval', sessionId: 'runtime-1' })
+    expect(respond).toHaveBeenCalledWith({ choice: 'always', kind: 'approval', requestId: 'approval-test', sessionId: 'runtime-1' })
   })
 
   it('never renders permanent approval when the action forbids it', async () => {
     await render({
       allowPermanent: false, choices: ['once', 'always', 'deny'], command: 'echo safe',
-      description: 'Run a command', kind: 'approval', sessionId: 'runtime-1', status: 'waiting'
+      description: 'Run a command', kind: 'approval', requestId: 'approval-test', sessionId: 'runtime-1', status: 'waiting'
     })
 
     expect(container.querySelector('button[aria-label="Always allow this command"]')).toBeNull()
@@ -112,7 +112,7 @@ describe('ChatActionCard', () => {
 
     await render({
       allowPermanent: false, choices: ['once', 'deny'], command: 'command B',
-      description: 'Second', kind: 'approval', sessionId: 'runtime-1', status: 'waiting'
+      description: 'Second', kind: 'approval', requestId: 'approval-test', sessionId: 'runtime-1', status: 'waiting'
     }, respond)
     const runOnce = container.querySelector('button[aria-label="Run once"]') as HTMLButtonElement
     await act(async () => runOnce.click())

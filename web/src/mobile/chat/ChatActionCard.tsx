@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { MobilePendingAction } from '../mobile-action-state'
 
 type ClarifyResponse = { answer: string; kind: 'clarify'; requestId: string }
-type ApprovalResponse = { choice: 'always' | 'deny' | 'once' | 'session'; kind: 'approval'; sessionId: string }
+type ApprovalResponse = { choice: 'always' | 'deny' | 'once' | 'session'; kind: 'approval'; requestId: string; sessionId: string }
 
 export function ChatActionCard({
   action,
@@ -111,12 +111,12 @@ export function ChatActionCard({
         <div className="mobile-action-confirm" role="alert">
           <strong>Always allow this command?</strong>
           <p>This can approve matching commands in future sessions.</p>
-          <button aria-label="Confirm always allow" disabled={submitting} onClick={() => void respond({ choice: 'always', kind: 'approval', sessionId: action.sessionId })} type="button">Confirm always</button>
+          <button aria-label="Confirm always allow" disabled={submitting} onClick={() => void respond({ choice: 'always', kind: 'approval', requestId: action.requestId, sessionId: action.sessionId })} type="button">Confirm always</button>
           <button aria-label="Cancel always allow" disabled={submitting} onClick={() => setConfirmAlways(false)} type="button">Cancel</button>
         </div>
       ) : (
         <div className="mobile-action-buttons">
-          {visibleChoices.map(choice => <button aria-label={choice === 'always' ? 'Always allow this command' : labels[choice]} disabled={submitting} key={choice} onClick={() => choice === 'always' ? setConfirmAlways(true) : void respond({ choice, kind: 'approval', sessionId: action.sessionId })} type="button">{labels[choice]}</button>)}
+          {visibleChoices.map(choice => <button aria-label={choice === 'always' ? 'Always allow this command' : labels[choice]} disabled={submitting} key={choice} onClick={() => choice === 'always' ? setConfirmAlways(true) : void respond({ choice, kind: 'approval', requestId: action.requestId, sessionId: action.sessionId })} type="button">{labels[choice]}</button>)}
         </div>
       )}
       {error && <p className="mobile-action-error" role="alert">{error}</p>}

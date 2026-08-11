@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+import uuid
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -2446,7 +2447,7 @@ class _ApprovalEntry:
 
     def __init__(self, data: dict):
         self.event = threading.Event()
-        self.data = data          # command, description, pattern_keys, …
+        self.data = {**data, "request_id": str(uuid.uuid4())}
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
         # Optional free-text reason supplied with an explicit deny
         # (``/deny <reason>``) so the agent can adapt instead of only
@@ -2485,7 +2486,8 @@ def unregister_gateway_notify(session_key: str) -> None:
 
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
-                             reason: Optional[str] = None) -> int:
+                             reason: Optional[str] = None,
+                             expected_request_id: Optional[str] = None) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
@@ -2502,6 +2504,8 @@ def resolve_gateway_approval(session_key: str, choice: str,
     with _lock:
         queue = _gateway_queues.get(session_key)
         if not queue:
+            return 0
+        if expected_request_id is not None and queue[0].data.get("request_id") != expected_request_id:
             return 0
         if resolve_all:
             targets = list(queue)
@@ -3656,7 +3660,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
     # Notify the user (bridges sync agent thread → async gateway)
     try:
-        notify_cb(approval_data)
+        notify_cb(entry.data)
     except Exception as exc:
         logger.warning("Gateway approval notify failed: %s", exc)
         _drop_entry()
