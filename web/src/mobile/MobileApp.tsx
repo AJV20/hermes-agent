@@ -2,8 +2,9 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Navigate, useLocation } from 'react-router'
 
 import { useProfileScope } from '@/contexts/useProfileScope'
-import { api, type CronJob, type SessionInfo, type StatusResponse } from '@/lib/api'
+import { api, type CronJob, type MobileNotification, type SessionInfo, type StatusResponse } from '@/lib/api'
 
+import { loadMobilePreferences, type MobilePreferences } from './mobile-preferences'
 import { useMobileViewportSync, usePwaUpdateReady } from './mobile-hooks'
 import { PwaUpdateBanner } from './ui/PwaUpdateBanner'
 import { orderCronJobs, routeTab, safeDecodePathSegment } from './mobile-utils'
@@ -29,6 +30,8 @@ export function MobileApp() {
   const [loadingMoreSessions, setLoadingMoreSessions] = useState(false)
   const [sessionsPageError, setSessionsPageError] = useState(false)
   const [cronJobs, setCronJobs] = useState<CronJob[]>([])
+  const [notifications, setNotifications] = useState<MobileNotification[]>([])
+  const [preferences, setPreferences] = useState<MobilePreferences>(() => loadMobilePreferences('default'))
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [statusLoad, setStatusLoad] = useState<ScopedLoadState>({ phase: 'loading', scope: null })
   const [sessionsLoad, setSessionsLoad] = useState<ScopedLoadState>({ phase: 'loading', scope: null })
@@ -36,8 +39,30 @@ export function MobileApp() {
   const [sessionsRefreshKey, setSessionsRefreshKey] = useState(0)
   const [chatUpdateBlocked, setChatUpdateBlocked] = useState(false)
   const selectedProfile = profile || currentProfile
+  const [notificationError, setNotificationError] = useState<string | null>(null)
   const sessionsScope = `${selectedProfile}\u0000${archivedSessions ? 'archived' : 'active'}`
   const sessionsScopeRef = useRef(sessionsScope)
+
+  useEffect(() => {
+    setPreferences(loadMobilePreferences(selectedProfile))
+    let cancelled = false
+    void api.getMobileNotifications(profile).then(
+      value => { if (!cancelled) setNotifications(value.items) },
+      () => { if (!cancelled) setNotifications([]) }
+    )
+    return () => { cancelled = true }
+  }, [profile, selectedProfile])
+
+  const markNotificationRead = useCallback(async (notification: MobileNotification) => {
+    if (notification.read_at) return
+    setNotificationError(null)
+    try {
+      const updated = await api.markMobileNotificationRead(notification.id, profile)
+      setNotifications(current => current.map(item => item.id === updated.id ? updated : item))
+    } catch (error) {
+      setNotificationError(error instanceof Error ? error.message : 'Could not mark the notification read.')
+    }
+  }, [profile])
 
   useEffect(() => {
     sessionsScopeRef.current = sessionsScope
@@ -166,6 +191,10 @@ export function MobileApp() {
       {active === 'home' && (
         <HomeScreen
           cronJobs={orderedCronJobs}
+          notificationError={notificationError}
+          notifications={notifications}
+          onMarkNotificationRead={notification => void markNotificationRead(notification)}
+          preferences={preferences}
           profile={profile}
           sessions={visibleSessions}
           sessionsPhase={sessionsPhase}
@@ -189,7 +218,7 @@ export function MobileApp() {
         />
       )}
       {active === 'tasks' && <TasksScreen jobs={orderedCronJobs} phase={tasksPhase} profile={selectedProfile} />}
-      {active === 'more' && (pathname.startsWith('/mobile/notifications') ? <NotificationsScreen key={profile || 'default'} profile={profile} /> : <MoreScreen />)}
+      {active === 'more' && (pathname.startsWith('/mobile/notifications') ? <NotificationsScreen key={profile || 'default'} profile={profile} /> : <MoreScreen onPreferencesChange={setPreferences} preferences={preferences} profile={selectedProfile} />)}
       <BottomNavigation active={active} />
       <PwaUpdateBanner onLater={deferUpdate} visible={updateReady} />
     </div>

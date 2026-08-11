@@ -1398,6 +1398,44 @@ describe('MobileApp', () => {
     await act(async () => pendingPrompt)
   })
 
+  it('shows failure notifications ahead of disconnected Desktop, failed tasks, and resumable work', async () => {
+    apiMocks.getStatus.mockResolvedValueOnce({ active_sessions: 0, gateway_running: false, gateway_state: 'stopped', version: '1.0.0' })
+    apiMocks.getCronJobs.mockResolvedValueOnce([{ id: 'failed-task', enabled: true, last_status: 'failed', name: 'Verify backup' } as never])
+    apiMocks.getMobileNotifications.mockResolvedValueOnce({ items: [
+      { id: 'notice-1', level: 'error', read_at: null, title: 'Backup failed', body: 'Backup could not complete.', created_at: 1 } as never
+    ], total: 1 })
+    await renderAt('/mobile')
+
+    const cards = Array.from(container.querySelectorAll('.mobile-today-card')).map(card => card.textContent)
+    expect(cards).toHaveLength(4)
+    expect(cards[0]).toContain('Backup failed')
+    expect(cards[1]).toContain('disconnected')
+    expect(cards[2]).toContain('Verify backup')
+    expect(cards[3]).toContain('Hermes mobile PWA')
+    expect(container.querySelector('a[aria-label="Ask Hermes"]')).not.toBeNull()
+  })
+
+  it('persists Home visibility, ordering, text size, and density in the selected profile', async () => {
+    profileMocks.profile = 'mabel'
+    await renderAt('/mobile/more')
+    await act(async () => {
+      ;(Array.from(container.querySelectorAll('button')).find(button => button.textContent === 'Customize') as HTMLButtonElement).click()
+    })
+    await act(async () => {
+      ;(Array.from(container.querySelectorAll('button')).find(button => button.textContent === 'Large') as HTMLButtonElement).click()
+    })
+    await act(async () => {
+      ;(Array.from(container.querySelectorAll('button')).find(button => button.textContent === 'Compact') as HTMLButtonElement).click()
+    })
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Move Task attention earlier"]') as HTMLButtonElement).click()
+    })
+
+    const stored = JSON.parse(window.localStorage.getItem('hermes.mobile.preferences.v1:mabel') ?? '{}')
+    expect(stored).toMatchObject({ textSize: 'large', density: 'compact' })
+    expect(stored.cardOrder.indexOf('tasks')).toBeLessThan(2)
+  })
+
   it('recovers from a malformed encoded chat URL', async () => {
     await renderAt('/mobile/chat/%')
 
