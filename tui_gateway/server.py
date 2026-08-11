@@ -7975,6 +7975,42 @@ def _session_pending_kind(sid: str) -> str:
     return ""
 
 
+def _session_pending_prompt(sid: str) -> dict | None:
+    """Return the reconnect-safe projection of a pending interactive prompt.
+
+    Clarify payloads contain display-safe questions and choices and can be
+    resumed by a mobile/web renderer. Secret and sudo prompts are deliberately
+    collapsed to an opaque marker so reconnect snapshots never become a second
+    credential-egress path. Renderer-only terminal/preview/window requests are
+    omitted because another client cannot answer them safely.
+    """
+    with _prompt_lock:
+        for request_id, (owner_sid, _ev) in list(_pending.items()):
+            if owner_sid != sid:
+                continue
+            event, raw_payload = _pending_prompt_payloads.get(
+                request_id, ("input.request", {})
+            )
+            if event == "clarify.request":
+                payload = {
+                    "request_id": request_id,
+                    "question": str(raw_payload.get("question") or ""),
+                    "choices": [
+                        str(choice)
+                        for choice in raw_payload.get("choices", [])
+                        if isinstance(choice, str)
+                    ],
+                    "multi_select": bool(raw_payload.get("multi_select", False)),
+                }
+                return {"type": event, "payload": payload}
+            if event in {"secret.request", "sudo.request"}:
+                return {
+                    "type": "sensitive.request",
+                    "payload": {"request_id": request_id},
+                }
+    return None
+
+
 def _session_live_status(sid: str, session: dict) -> str:
     if _session_pending_kind(sid):
         return "waiting"
@@ -8194,6 +8230,9 @@ def _live_session_payload(
         payload["inflight"] = inflight
     if queued:
         payload["queued"] = queued
+    pending_prompt = _session_pending_prompt(sid)
+    if pending_prompt:
+        payload["pending_prompt"] = pending_prompt
     return payload
 
 
