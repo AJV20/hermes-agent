@@ -1614,7 +1614,9 @@ describe('MobileApp', () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
       await Promise.resolve()
     })
-    expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(1)
+    await waitForReact(() => {
+      expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(1)
+    })
   })
 
   it('allows an expired clarification follow-up after the original submit acknowledgement stalls', async () => {
@@ -1642,6 +1644,7 @@ describe('MobileApp', () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
       await Promise.resolve()
     })
+    await waitForReact(() => expect(promptCalls).toBe(1))
     await act(async () => gatewayMocks.eventHandler?.({
       payload: { request_id: 'clarify-race', question: 'Choose?' },
       session_id: 'runtime-expiry-race',
@@ -1660,7 +1663,7 @@ describe('MobileApp', () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
       await Promise.resolve()
     })
-    expect(promptCalls).toBe(2)
+    await waitForReact(() => expect(promptCalls).toBe(2))
     releaseOriginal()
     await act(async () => originalSubmit)
     await act(async () => {

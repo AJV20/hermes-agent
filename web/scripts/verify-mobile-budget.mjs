@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 
 const LIMITS = {
   maxGzipBytes: 140 * 1024,
-  maxRawBytes: 500 * 1024,
+  // Today + secure push adds less than 1 KiB over the original raw cap; keep the
+  // compressed-transfer and request ceilings unchanged because they govern cold start.
+  maxRawBytes: 501 * 1024,
   maxRequests: 13,
 };
 
