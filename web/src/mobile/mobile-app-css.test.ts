@@ -40,6 +40,13 @@ describe('mobile bottom navigation layout', () => {
     expect(composer).not.toContain('env(safe-area-inset-bottom')
   })
 
+  it('keeps the chat textarea at 16 CSS pixels so iOS does not focus-zoom the composer away from the keyboard', () => {
+    const textarea = styles.match(/\.mobile-composer textarea\s*\{([^}]*)\}/)?.[1] ?? ''
+
+    expect(textarea).toContain('font-size: 1rem')
+    expect(textarea).not.toContain('font-size: 0.82rem')
+  })
+
   it('keeps compact controls at least 44 CSS pixels tall', () => {
     const iconButton = styles.match(/\.mobile-icon-button\s*\{([^}]*)\}/)?.[1] ?? ''
     const sectionLink = styles.match(/\.mobile-section-heading a\s*\{([^}]*)\}/)?.[1] ?? ''
@@ -133,10 +140,12 @@ describe('mobile bottom navigation layout', () => {
     const buttons = styles.match(/\.mobile-action-card button\s*\{([^}]*)\}/)?.[1] ?? ''
     const disclosure = styles.match(/\.mobile-action-card summary\s*\{([^}]*)\}/)?.[1] ?? ''
     const command = styles.match(/\.mobile-action-card pre\s*\{([^}]*)\}/)?.[1] ?? ''
+    const textarea = styles.match(/\.mobile-action-card textarea\s*\{([^}]*)\}/)?.[1] ?? ''
 
     expect(card).toContain('padding: 1rem')
     expect(buttons).toContain('min-height: 2.75rem')
     expect(disclosure).toContain('min-height: 2.75rem')
+    expect(textarea).toContain('font-size: 1rem')
     expect(command).toContain('overflow-x: auto')
     expect(command).toContain('white-space: pre-wrap')
   })

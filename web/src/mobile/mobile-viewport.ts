@@ -2,7 +2,7 @@ type MobileViewportWindow = {
   innerHeight: number
   navigator?: { standalone?: boolean; userAgent?: string }
   screen?: { height: number }
-  visualViewport?: { height: number } | null
+  visualViewport?: { height: number; offsetTop?: number } | null
 }
 
 type MobileViewportDocument = {
@@ -19,10 +19,13 @@ export function measureMobileViewportHeight(
   clientHeight: number,
   visualHeight: number | undefined,
   standaloneScreenHeight?: number,
+  visualOffsetTop = 0,
 ): number {
   const layoutHeight = innerHeight || clientHeight || visualHeight || standaloneScreenHeight || 0
-  const visibleHeight = visualHeight && visualHeight > 0 ? visualHeight : layoutHeight
-  const measuredHeight = Math.min(layoutHeight, visibleHeight)
+  const visibleBottom = visualHeight && visualHeight > 0
+    ? visualHeight + Math.max(0, visualOffsetTop)
+    : layoutHeight
+  const measuredHeight = Math.min(layoutHeight, visibleBottom)
 
   // Installed iOS PWAs can cold-launch with innerHeight/visualViewport.height
   // temporarily shortened by the native home-indicator region. A real keyboard
@@ -50,6 +53,7 @@ export function syncMobileViewportHeight(
     viewportDocument.documentElement.clientHeight,
     viewportWindow.visualViewport?.height,
     standaloneScreenHeight,
+    viewportWindow.visualViewport?.offsetTop,
   )
   if (height > 0) {
     viewportDocument.documentElement.style.setProperty('--mobile-app-height', `${height}px`)

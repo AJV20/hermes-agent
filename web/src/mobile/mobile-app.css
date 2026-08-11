@@ -784,7 +784,7 @@
   background: var(--mobile-panel);
   color: var(--mobile-text);
   font: inherit;
-  font-size: 0.82rem;
+  font-size: 1rem;
   resize: none;
   outline: none;
 }
@@ -1202,6 +1202,7 @@
   background: var(--mobile-bg);
   color: var(--mobile-text);
   font: inherit;
+  font-size: 1rem;
   resize: vertical;
 }
 .mobile-action-card button {

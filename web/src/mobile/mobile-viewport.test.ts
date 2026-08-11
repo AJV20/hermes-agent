@@ -15,6 +15,10 @@ describe('mobile viewport synchronization', () => {
     expect(measureMobileViewportHeight(844, 844, 512, 844)).toBe(512)
   })
 
+  it('uses the visual viewport bottom when iOS pans a focused textarea above the keyboard', () => {
+    expect(measureMobileViewportHeight(844, 844, 168, 844, 383)).toBe(551)
+  })
+
   it('falls back to the document client height when innerHeight is unavailable', () => {
     expect(measureMobileViewportHeight(0, 780, undefined)).toBe(780)
   })
