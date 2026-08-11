@@ -131,10 +131,12 @@ describe('mobile bottom navigation layout', () => {
   it('keeps chat action cards readable and touch sized', () => {
     const card = styles.match(/\.mobile-action-card\s*\{([^}]*)\}/)?.[1] ?? ''
     const buttons = styles.match(/\.mobile-action-card button\s*\{([^}]*)\}/)?.[1] ?? ''
+    const disclosure = styles.match(/\.mobile-action-card summary\s*\{([^}]*)\}/)?.[1] ?? ''
     const command = styles.match(/\.mobile-action-card pre\s*\{([^}]*)\}/)?.[1] ?? ''
 
     expect(card).toContain('padding: 1rem')
     expect(buttons).toContain('min-height: 2.75rem')
+    expect(disclosure).toContain('min-height: 2.75rem')
     expect(command).toContain('overflow-x: auto')
     expect(command).toContain('white-space: pre-wrap')
   })

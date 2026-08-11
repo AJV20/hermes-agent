@@ -56,6 +56,7 @@ export function ChatScreen({
   const runtimeId = useRef<string | null>(null)
   const pendingStoredId = useRef<string | null>(null)
   const submitInFlight = useRef(false)
+  const submitGeneration = useRef(0)
   const filePickerRef = useRef<HTMLInputElement | null>(null)
   const cameraPickerRef = useRef<HTMLInputElement | null>(null)
   const attachmentRef = useRef<MobileAttachment[]>([])
@@ -111,7 +112,9 @@ export function ChatScreen({
     const bufferedGatewayEvents: GatewayEvent[] = []
 
     const applyScopedGatewayEvent = (event: GatewayEvent) => {
-      if (event.type === 'message.complete' || event.type === 'error') submitInFlight.current = false
+      if (['approval.request', 'clarify.expire', 'clarify.request', 'error', 'message.complete', 'sensitive.request'].includes(event.type)) {
+        submitInFlight.current = false
+      }
       setActions(current => applyMobileActionEvent(current, event, runtimeId.current))
       setChat(current => applyMobileGatewayEvent(current, event))
     }
@@ -325,6 +328,10 @@ export function ChatScreen({
         return
       }
       const optimisticId = `user-${Date.now()}`
+      const generation = ++submitGeneration.current
+      const releaseSubmission = () => {
+        if (submitGeneration.current === generation) submitInFlight.current = false
+      }
       const attachmentNames = pendingAttachments.map(attachment => attachment.file.name).join(', ')
       const optimisticContent = [text, attachmentNames ? `📎 ${attachmentNames}` : ''].filter(Boolean).join('\n')
       submitInFlight.current = true
@@ -349,7 +356,7 @@ export function ChatScreen({
       }))
       const dropCanceledSubmission = () => {
         const pendingIds = new Set(pendingAttachments.map(attachment => attachment.id))
-        submitInFlight.current = false
+        releaseSubmission()
         setAttachments(current => {
           const removed = current.filter(attachment => pendingIds.has(attachment.id))
           removed.forEach(revokeAttachmentPreview)
@@ -439,7 +446,8 @@ export function ChatScreen({
         }
         const promptText = [...fileRefs, text].filter(Boolean).join('\n\n')
         await gateway.request('prompt.submit', { session_id: sid, text: promptText }, PROMPT_TIMEOUT_MS)
-        submitInFlight.current = false
+        if (submitGeneration.current !== generation) return
+        releaseSubmission()
         setAttachments(current => {
           const completed = current.filter(attachment => pendingAttachments.some(pending => pending.id === attachment.id))
           completed.forEach(revokeAttachmentPreview)
@@ -453,7 +461,8 @@ export function ChatScreen({
           navigate(`/mobile/chat/${encodeURIComponent(durable)}`, { replace: true })
         }
       } catch (error) {
-        submitInFlight.current = false
+        if (submitGeneration.current !== generation) return
+        releaseSubmission()
         setDraft(current => current.trim() ? current : text)
         const message = error instanceof Error ? error.message : 'Could not send message'
         setAttachments(current => current.map(attachment => (

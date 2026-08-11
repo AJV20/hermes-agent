@@ -1221,6 +1221,17 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.45rem;
 }
+.mobile-action-card summary {
+  min-height: 2.75rem;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  border-radius: 0.5rem;
+}
+.mobile-action-card summary:focus-visible {
+  outline: 2px solid var(--mobile-accent);
+  outline-offset: 2px;
+}
 .mobile-action-card pre {
   max-width: 100%;
   padding: 0.65rem;

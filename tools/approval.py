@@ -2519,6 +2519,15 @@ def resolve_gateway_approval(session_key: str, choice: str,
     return len(targets)
 
 
+def get_gateway_pending_approval(session_key: str) -> Optional[dict]:
+    """Return a copy of the oldest unresolved gateway approval for safe projection."""
+    with _lock:
+        queue = _gateway_queues.get(session_key)
+        if not queue:
+            return None
+        return dict(queue[0].data)
+
+
 def has_blocking_approval(session_key: str) -> bool:
     """Check if a session has one or more blocking gateway approvals waiting."""
     with _lock:

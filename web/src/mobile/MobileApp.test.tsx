@@ -1500,6 +1500,64 @@ describe('MobileApp', () => {
     expect(gatewayMocks.request.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(1)
   })
 
+  it('allows an expired clarification follow-up after the original submit acknowledgement stalls', async () => {
+    let releaseOriginal!: () => void
+    let releaseFollowup!: () => void
+    const originalSubmit = new Promise<void>(resolve => { releaseOriginal = resolve })
+    const followupSubmit = new Promise<void>(resolve => { releaseFollowup = resolve })
+    let promptCalls = 0
+    gatewayMocks.request.mockImplementation((method: string) => {
+      if (method === 'session.resume') return Promise.resolve({ running: false, session_id: 'runtime-expiry-race' })
+      if (method === 'prompt.submit') {
+        promptCalls += 1
+        return promptCalls === 1 ? originalSubmit : followupSubmit
+      }
+      return Promise.resolve({})
+    })
+    await renderAt('/mobile/chat/session-1')
+
+    const textarea = container.querySelector('textarea[aria-label="Message Hermes"]') as HTMLTextAreaElement
+    const form = container.querySelector('form') as HTMLFormElement
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      setter?.call(textarea, 'Original prompt')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+    await act(async () => gatewayMocks.eventHandler?.({
+      payload: { request_id: 'clarify-race', question: 'Choose?' },
+      session_id: 'runtime-expiry-race',
+      type: 'clarify.request'
+    }))
+    await act(async () => gatewayMocks.eventHandler?.({
+      payload: { request_id: 'clarify-race' },
+      session_id: 'runtime-expiry-race',
+      type: 'clarify.expire'
+    }))
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      setter?.call(textarea, 'Follow-up after expiry')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+    expect(promptCalls).toBe(2)
+    releaseOriginal()
+    await act(async () => originalSubmit)
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      setter?.call(textarea, 'Third prompt while follow-up is pending')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+    expect(promptCalls).toBe(2)
+    releaseFollowup()
+    await act(async () => followupSubmit)
+  })
+
   it('replays a session action that arrives while session resume is still resolving', async () => {
     let finishResume!: (value: { session_id: string }) => void
     const pendingResume = new Promise<{ session_id: string }>(resolve => { finishResume = resolve })

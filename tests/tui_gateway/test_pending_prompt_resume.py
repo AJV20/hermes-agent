@@ -1,5 +1,6 @@
 import threading
 
+from tools import approval
 from tui_gateway import server
 
 
@@ -37,6 +38,38 @@ def test_live_session_payload_recovers_safe_pending_clarify_after_reconnect(monk
             "multi_select": False,
         },
     }
+
+
+def test_live_session_payload_recovers_oldest_pending_approval_after_reconnect(monkeypatch):
+    session = {
+        "created_at": 1.0,
+        "display_history_prefix": [],
+        "history": [],
+        "history_lock": threading.RLock(),
+        "running": True,
+        "session_key": "stored-session",
+    }
+    approval._gateway_queues["stored-session"] = [
+        approval._ApprovalEntry({"command": "first command", "description": "first", "allow_permanent": False}),
+        approval._ApprovalEntry({"command": "second command", "description": "second"}),
+    ]
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_fallback_session_info", lambda _session: {})
+    try:
+        payload = server._live_session_payload("runtime-1", session, omit_messages=True)
+    finally:
+        approval._gateway_queues.pop("stored-session", None)
+
+    assert payload["pending_prompt"] == {
+        "type": "approval.request",
+        "payload": {
+            "allow_permanent": False,
+            "choices": ["once", "session", "deny"],
+            "command": "first command",
+            "description": "first",
+        },
+    }
+    assert "second command" not in repr(payload)
 
 
 def test_live_session_payload_never_replays_sensitive_prompt_payload(monkeypatch):

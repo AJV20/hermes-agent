@@ -1873,13 +1873,7 @@ def _send_compute_host_control(
     )
 
 
-def _emit_approval_request(sid: str, data: dict | None) -> None:
-    """Emit an ``approval.request`` event to the TUI client with the command
-    redacted. The approval payload is built from the RAW command string, so a
-    credential-shaped value Tirith flagged would otherwise be echoed verbatim
-    to the TUI client (#48456 — third egress transport alongside the chat
-    platforms and the SSE/API stream fixed in #50767). Reuse the shared gateway
-    seam so all approval transports redact consistently."""
+def _approval_event_payload(data: dict | None) -> dict:
     payload = dict(data or {})
     if "choices" not in payload:
         if payload.get("smart_denied"):
@@ -1892,7 +1886,12 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
         from gateway.run import _redact_approval_command
 
         payload["command"] = _redact_approval_command(payload.get("command"))
-    _emit("approval.request", sid, payload)
+    return payload
+
+
+def _emit_approval_request(sid: str, data: dict | None) -> None:
+    """Emit an ``approval.request`` event with a consistently redacted command."""
+    _emit("approval.request", sid, _approval_event_payload(data))
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
@@ -7975,7 +7974,7 @@ def _session_pending_kind(sid: str) -> str:
     return ""
 
 
-def _session_pending_prompt(sid: str) -> dict | None:
+def _session_pending_prompt(sid: str, session_key: str = "") -> dict | None:
     """Return the reconnect-safe projection of a pending interactive prompt.
 
     Clarify payloads contain display-safe questions and choices and can be
@@ -8008,6 +8007,12 @@ def _session_pending_prompt(sid: str) -> dict | None:
                     "type": "sensitive.request",
                     "payload": {"request_id": request_id},
                 }
+    if session_key:
+        from tools.approval import get_gateway_pending_approval
+
+        approval = get_gateway_pending_approval(session_key)
+        if approval:
+            return {"type": "approval.request", "payload": _approval_event_payload(approval)}
     return None
 
 
@@ -8230,7 +8235,7 @@ def _live_session_payload(
         payload["inflight"] = inflight
     if queued:
         payload["queued"] = queued
-    pending_prompt = _session_pending_prompt(sid)
+    pending_prompt = _session_pending_prompt(sid, _session_lookup_key(session, fallback=sid))
     if pending_prompt:
         payload["pending_prompt"] = pending_prompt
     return payload
