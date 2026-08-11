@@ -967,6 +967,8 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     request_id = params.get("request_id")
+    if params.get("all"):
+        return _err(rid, 4002, "Mobile approval responses may resolve only the visible FIFO head")
     if not isinstance(request_id, str) or not request_id or len(request_id) > 128:
         return _err(rid, 4002, "A valid approval request_id is required")
     try:
@@ -975,7 +977,7 @@ def _(rid, params: dict) -> dict:
         resolved = resolve_gateway_approval(
             session["session_key"],
             params.get("choice", "deny"),
-            resolve_all=params.get("all", False),
+            resolve_all=False,
             expected_request_id=request_id,
         )
         if resolved == 0:

@@ -81,12 +81,12 @@ function approvalChoices(payload: Record<string, unknown>): MobileApprovalChoice
 }
 
 export function hydrateMobileActionResume(
-  _state: MobileActionState,
+  state: MobileActionState,
   snapshot: { pending_prompt?: { payload?: unknown; type?: string } | null; session_id: string }
 ): MobileActionState {
   const pending = snapshot.pending_prompt
-  if (!pending?.type) return EMPTY_MOBILE_ACTIONS
-  return applyMobileActionEvent(EMPTY_MOBILE_ACTIONS, {
+  if (!pending?.type) return state
+  return applyMobileActionEvent(state, {
     payload: pending.payload,
     session_id: snapshot.session_id,
     type: pending.type

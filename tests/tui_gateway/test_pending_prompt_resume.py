@@ -94,6 +94,29 @@ def test_stale_approval_request_id_cannot_resolve_the_hidden_fifo_head():
         approval._gateway_queues.pop("request-bound", None)
 
 
+def test_mobile_approval_handler_rejects_resolve_all_without_popping_hidden_entries():
+    first = approval._ApprovalEntry({"command": "first"})
+    second = approval._ApprovalEntry({"command": "second"})
+    approval._gateway_queues["handler-bound"] = [first, second]
+    with server._sessions_lock:
+        server._sessions["runtime-handler"] = {"session_key": "handler-bound"}
+    try:
+        response = server._methods["approval.respond"]("rid", {
+            "all": True,
+            "choice": "once",
+            "request_id": first.data["request_id"],
+            "session_id": "runtime-handler",
+        })
+        assert "error" in response
+        assert approval._gateway_queues["handler-bound"] == [first, second]
+        assert not first.event.is_set()
+        assert not second.event.is_set()
+    finally:
+        approval._gateway_queues.pop("handler-bound", None)
+        with server._sessions_lock:
+            server._sessions.pop("runtime-handler", None)
+
+
 def test_live_session_payload_never_replays_sensitive_prompt_payload(monkeypatch):
     session = {
         "created_at": 1.0,

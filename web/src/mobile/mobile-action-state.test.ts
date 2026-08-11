@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { applyMobileActionEvent, completeMobileAction, EMPTY_MOBILE_ACTIONS } from './mobile-action-state'
+import { applyMobileActionEvent, completeMobileAction, EMPTY_MOBILE_ACTIONS, hydrateMobileActionResume } from './mobile-action-state'
 
 describe('mobile action projection', () => {
   it('creates and expires a scoped clarify card without losing its choices', () => {
@@ -120,6 +120,48 @@ describe('mobile action projection', () => {
 
     expect(duplicate).toBe(first)
     expect(duplicate.queued).toHaveLength(0)
+  })
+
+  it('merges a delayed live event into an identical resume projection', () => {
+    const snapshot = {
+      pending_prompt: {
+        payload: { command: 'command B', choices: ['once', 'deny'], request_id: 'approval-b' },
+        type: 'approval.request'
+      },
+      session_id: 'runtime-1'
+    }
+    const resumed = hydrateMobileActionResume(EMPTY_MOBILE_ACTIONS, snapshot)
+    const delayedLive = applyMobileActionEvent(resumed, {
+      session_id: 'runtime-1',
+      type: 'approval.request',
+      payload: snapshot.pending_prompt.payload
+    }, 'runtime-1')
+
+    expect(delayedLive).toBe(resumed)
+    expect(delayedLive.queued).toHaveLength(0)
+  })
+
+  it('preserves a live submitting action object when the same resume snapshot arrives', () => {
+    const live = applyMobileActionEvent(EMPTY_MOBILE_ACTIONS, {
+      session_id: 'runtime-1',
+      type: 'approval.request',
+      payload: { command: 'command B', choices: ['once', 'deny'], request_id: 'approval-b' }
+    }, 'runtime-1')
+    if (live.pending?.kind !== 'approval') throw new Error('approval fixture was not projected')
+    const submitting = {
+      ...live,
+      pending: { ...live.pending, status: 'submitting' as const }
+    }
+    const merged = hydrateMobileActionResume(submitting, {
+      pending_prompt: {
+        payload: { command: 'command B', choices: ['once', 'deny'], request_id: 'approval-b' },
+        type: 'approval.request'
+      },
+      session_id: 'runtime-1'
+    })
+
+    expect(merged).toBe(submitting)
+    expect(merged.pending).toBe(submitting.pending)
   })
 
   it('never retains sudo or secret request payloads on mobile', () => {
