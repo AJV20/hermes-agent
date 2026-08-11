@@ -155,6 +155,40 @@ def test_delivery_deadlines_fit_inside_the_durable_lease():
     assert mobile_push.DNS_RESOLUTION_TIMEOUT + sum(mobile_push.NETWORK_TIMEOUT) < mobile_push.LEASE_SECONDS
 
 
+def test_sender_pins_the_vetted_address_without_a_second_hostname_lookup(monkeypatch, tmp_path):
+    resolved = iter([["142.250.72.202"], ["127.0.0.1"]])
+    monkeypatch.setattr(mobile_push, "_resolve_host_addresses", lambda _host: next(resolved))
+    observed = {}
+
+    def fake_post(self, url, **kwargs):
+        observed["url"] = url
+        observed["headers"] = kwargs["headers"]
+        observed["allow_redirects"] = kwargs.get("allow_redirects")
+        observed["adapter"] = self.get_adapter(url)
+        return type("Response", (), {"status_code": 201, "reason": "Created", "text": ""})()
+
+    import requests
+    monkeypatch.setattr(requests.Session, "post", fake_post)
+
+    def fake_webpush(**kwargs):
+        endpoint = kwargs["subscription_info"]["endpoint"]
+        return kwargs["requests_session"].post(endpoint, headers={})
+
+    monkeypatch.setattr(mobile_push, "webpush", fake_webpush)
+    mobile_push.ensure_vapid_keypair(tmp_path)
+    sender = mobile_push.make_pywebpush_sender(lambda *_args: None, home=tmp_path)
+    sender(
+        {"endpoint": "https://fcm.googleapis.com/push/abc", "p256dh": "A" * 87, "auth": "B" * 22},
+        {"v": 1}, ttl=60, urgency="normal",
+    )
+
+    assert observed["url"].startswith("https://142.250.72.202/")
+    assert observed["headers"]["Host"] == "fcm.googleapis.com"
+    assert observed["allow_redirects"] is False
+    assert observed["adapter"].server_hostname == "fcm.googleapis.com"
+    assert next(resolved) == ["127.0.0.1"]
+
+
 def test_dns_resolution_has_a_finite_deadline(monkeypatch):
     monkeypatch.setattr(mobile_push, "DNS_RESOLUTION_TIMEOUT", 0.01, raising=False)
 
@@ -251,6 +285,27 @@ def test_foundation_database_migrates_idempotently_without_losing_metadata(monke
         assert connection.execute(
             "SELECT COUNT(*) FROM mobile_push_migrations WHERE name='foundation-subscriptions-v1'"
         ).fetchone()[0] == 1
+
+def test_foundation_migration_rejects_endpoints_outside_the_current_safety_policy(tmp_path):
+    legacy = tmp_path / "mobile_push.db"
+    with sqlite3.connect(legacy) as connection:
+        connection.execute("""CREATE TABLE subscriptions (
+            id TEXT PRIMARY KEY, device_id TEXT NOT NULL UNIQUE, endpoint TEXT NOT NULL UNIQUE,
+            p256dh TEXT NOT NULL, auth TEXT NOT NULL, categories TEXT NOT NULL,
+            created_at REAL NOT NULL, last_seen_at REAL NOT NULL,
+            failure_count INTEGER NOT NULL DEFAULT 0, last_failure_at REAL
+        )""")
+        connection.execute(
+            "INSERT INTO subscriptions VALUES ('unsafe', 'device-unsafe-123', 'https://internal.example/push', ?, ?, 'error', 1, 1, 0, NULL)",
+            ("A" * 87, "B" * 22),
+        )
+
+    assert mobile_push.list_subscriptions(tmp_path) == []
+    with sqlite3.connect(tmp_path / mobile_notifications.DATABASE_NAME) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM mobile_push_migrations WHERE name='foundation-subscriptions-v1'"
+        ).fetchone()[0] == 1
+
 
 def test_malformed_foundation_database_does_not_block_notification_storage(tmp_path):
     legacy = tmp_path / "mobile_push.db"

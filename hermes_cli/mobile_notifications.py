@@ -51,12 +51,17 @@ def _migrate_foundation_push_subscriptions(conn: sqlite3.Connection, home: Path)
             legacy.close()
     except sqlite3.Error:
         return
+    from hermes_cli.mobile_push import validate_push_endpoint
+
     for row in rows:
         categories = sorted({item for item in str(row["categories"]).split(",") if item in _LEVELS})
         if (
-            not categories or not str(row["endpoint"]).startswith("https://")
-            or len(str(row["p256dh"])) != 87 or len(str(row["auth"])) != 22
+            not categories or len(str(row["p256dh"])) != 87 or len(str(row["auth"])) != 22
         ):
+            continue
+        try:
+            validate_push_endpoint(str(row["endpoint"]))
+        except ValueError:
             continue
         # Current records win on either unique identity; the retained legacy DB
         # makes every skipped collision auditable and permits a later manual repair.

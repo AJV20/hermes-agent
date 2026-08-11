@@ -67,8 +67,7 @@ def _resolve_host_addresses(host: str) -> list[str]:
     return list(outcome.get("addresses", []))
 
 
-def validate_push_endpoint(endpoint: str) -> None:
-    """Reject non-provider and non-public destinations at persistence and send time."""
+def _validated_push_destination(endpoint: str) -> tuple[str, list[str]]:
     parsed = urlparse(endpoint)
     host = (parsed.hostname or "").rstrip(".").lower()
     if (
@@ -89,6 +88,12 @@ def validate_push_endpoint(endpoint: str) -> None:
         mapped = getattr(address, "ipv4_mapped", None)
         if not address.is_global or (mapped is not None and not mapped.is_global):
             raise ValueError("Web Push endpoint must resolve only to public addresses")
+    return host, addresses
+
+
+def validate_push_endpoint(endpoint: str) -> None:
+    """Reject non-provider and non-public destinations at persistence and send time."""
+    _validated_push_destination(endpoint)
 
 
 def push_settings(config: dict[str, Any]) -> tuple[bool, str]:
@@ -265,6 +270,47 @@ def remove_subscription(home: Path, *, device_id: str) -> bool:
     return bool(removed)
 
 
+def _pinned_push_session(host: str, address: str):
+    """Return a no-proxy HTTPS session pinned to one vetted IP with hostname TLS checks."""
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3 import PoolManager
+    from urllib.parse import urlsplit, urlunsplit
+
+    class PinnedHTTPSAdapter(HTTPAdapter):
+        def __init__(self) -> None:
+            self.server_hostname = host
+            super().__init__(max_retries=0)
+
+        def init_poolmanager(self, connections: int, maxsize: int, block: bool = False, **pool_kwargs: Any) -> None:
+            self.poolmanager = PoolManager(
+                num_pools=connections,
+                maxsize=maxsize,
+                block=block,
+                assert_hostname=host,
+                server_hostname=host,
+                **pool_kwargs,
+            )
+
+    class PinnedSession(requests.Session):
+        def post(self, url: str, **kwargs: Any):
+            parsed = urlsplit(url)
+            if (parsed.hostname or "").rstrip(".").lower() != host:
+                raise ValueError("Web Push transport destination changed")
+            literal = f"[{address}]" if ":" in address else address
+            pinned_url = urlunsplit((parsed.scheme, literal, parsed.path, parsed.query, ""))
+            headers = dict(kwargs.pop("headers", {}) or {})
+            headers["Host"] = host
+            kwargs["allow_redirects"] = False
+            return super().post(pinned_url, headers=headers, **kwargs)
+
+    session = PinnedSession()
+    session.max_redirects = 0
+    session.trust_env = False
+    session.mount("https://", PinnedHTTPSAdapter())
+    return session
+
+
 def make_pywebpush_sender(
     secret_getter: Callable[[str, str | None], str | None],
     *,
@@ -285,11 +331,6 @@ def make_pywebpush_sender(
         or (parsed_subject.scheme == "https" and bool(parsed_subject.hostname))
     ):
         raise ValueError("Web Push VAPID subject must be a mailto: or HTTPS contact")
-    import requests
-    requests_session = requests.Session()
-    requests_session.max_redirects = 0
-    requests_session.trust_env = False
-
     def send(
         subscription: dict[str, Any],
         payload: dict[str, Any],
@@ -297,7 +338,9 @@ def make_pywebpush_sender(
         ttl: int,
         urgency: str,
     ) -> None:
-        validate_push_endpoint(str(subscription["endpoint"]))
+        endpoint = str(subscription["endpoint"])
+        host, addresses = _validated_push_destination(endpoint)
+        requests_session = _pinned_push_session(host, secrets.choice(addresses))
         webpush(
             subscription_info={
                 "endpoint": subscription["endpoint"],
