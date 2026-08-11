@@ -295,6 +295,13 @@ describe('MobileApp', () => {
     expect(container.textContent).toContain('Pro plan')
     expect(container.textContent).toContain('80% remaining')
     expect(container.textContent).toContain('45% remaining')
+    const quotaBars = Array.from(container.querySelectorAll<HTMLElement>('.mobile-codex-quota-track'))
+    expect(quotaBars.map(bar => bar.getAttribute('aria-label'))).toEqual([
+      'Session quota remaining',
+      'Weekly quota remaining'
+    ])
+    expect(quotaBars.map(bar => bar.getAttribute('aria-valuenow'))).toEqual(['80', '45'])
+    expect(quotaBars.map(bar => bar.querySelector<HTMLElement>('span')?.style.width)).toEqual(['80%', '45%'])
   })
 
   it('keeps the Home screen usable when Codex quota is unavailable', async () => {

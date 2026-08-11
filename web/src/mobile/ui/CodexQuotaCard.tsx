@@ -83,14 +83,14 @@ export function CodexQuotaCard({ profile }: { profile: string }) {
                   <span>{remaining}% remaining</span>
                 </div>
                 <div
-                  aria-label={`${window.label} quota used`}
+                  aria-label={`${window.label} quota remaining`}
                   aria-valuemax={100}
                   aria-valuemin={0}
-                  aria-valuenow={Math.round(used)}
+                  aria-valuenow={remaining}
                   className="mobile-codex-quota-track"
                   role="progressbar"
                 >
-                  <span style={{ width: `${used}%` }} />
+                  <span style={{ width: `${remaining}%` }} />
                 </div>
                 {reset && <small>Resets {reset}</small>}
               </div>
