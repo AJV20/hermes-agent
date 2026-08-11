@@ -1605,17 +1605,17 @@ def _persist_mobile_notification_event(event: str, sid: str, payload: dict | Non
         safe_kind = "".join(character for character in kind if character.isalnum() or character in "._-")[:64] or "notice"
         session_key = str(session.get("session_key") or "").strip() or None
         target = f"/mobile/chat/{quote(session_key, safe='')}" if session_key else "/mobile/notifications"
-        config_path = _hermes_home / "config.yaml"
+        config_path = home / "config.yaml"
         from hermes_cli.config import read_user_config_raw
         from hermes_cli.mobile_push import is_delivery_ready, kick_delivery_worker, make_pywebpush_sender, push_settings
         configured, vapid_subject = push_settings(
             read_user_config_raw(config_path) if config_path.is_file() else {}
         )
         sender = None
-        secret_token = set_secret_scope(build_profile_secret_scope(_hermes_home))
+        secret_token = set_secret_scope(build_profile_secret_scope(home))
         try:
-            if configured and is_delivery_ready(get_secret, home=_hermes_home, subject=vapid_subject):
-                sender = make_pywebpush_sender(get_secret, home=_hermes_home, subject=vapid_subject)
+            if configured and is_delivery_ready(get_secret, home=home, subject=vapid_subject):
+                sender = make_pywebpush_sender(get_secret, home=home, subject=vapid_subject)
         except Exception:
             logger.debug("mobile Web Push delivery unavailable", exc_info=True)
         finally:
@@ -1638,6 +1638,29 @@ def _persist_mobile_notification_event(event: str, sid: str, payload: dict | Non
             kick_delivery_worker(home, send=sender)
     except Exception:
         logger.debug("failed to persist mobile notification event", exc_info=True)
+
+
+def _emit_mobile_response_completion(
+    sid: str, session: dict, marker_key: str, *, eligible: bool = False
+) -> None:
+    """Emit one privacy-safe durable notice for an eligible successful user turn."""
+    if not eligible:
+        return
+    session_key = str(session.get("session_key") or "").strip()
+    if not session_key or not marker_key:
+        return
+    _emit(
+        "notification.show",
+        sid,
+        {
+            "id": f"response:{session_key}:{marker_key}",
+            "key": f"response:{session_key}:{marker_key}",
+            "kind": "response_complete",
+            "level": "success",
+            "text": "Hermes finished responding.",
+            "title": "Hermes response ready",
+        },
+    )
 
 
 def _emit(event: str, sid: str, payload: dict | None = None):
@@ -1738,6 +1761,7 @@ def _compute_host_turn_frame(
     session: dict,
     text: Any,
     image_paths: list[str] | None = None,
+    notify_response_complete: bool = False,
     queued_prompt_generation: int | None = None,
 ) -> dict:
     with session["history_lock"]:
@@ -1760,6 +1784,7 @@ def _compute_host_turn_frame(
         "cwd": _session_cwd(session),
         "profile_home": session.get("profile_home") or "",
         "model_override": session.get("model_override"),
+        "notify_response_complete": bool(notify_response_complete),
         "reasoning_config_override": session.get("create_reasoning_override"),
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session),
@@ -1841,6 +1866,7 @@ def _submit_prompt_to_compute_host(
     session: dict,
     text: Any,
     image_paths: list[str] | None = None,
+    notify_response_complete: bool = False,
     queued_prompt_generation: int | None = None,
 ) -> dict:
     cfg = _load_dashboard_process_isolation_config()
@@ -1850,6 +1876,7 @@ def _submit_prompt_to_compute_host(
         session,
         text,
         image_paths=image_paths,
+        notify_response_complete=notify_response_complete,
         queued_prompt_generation=queued_prompt_generation,
     )
 
@@ -5161,7 +5188,8 @@ def _current_profile_name() -> str:
 # v3: adds approvals.mode config RPCs and session.info reconciliation.
 # v4: session.create fast=false is an explicit per-session normal-tier override.
 # v5: uvicorn ws_max_size raised for one-shot base64 file.attach frames (>16 MiB).
-DESKTOP_BACKEND_CONTRACT = 5
+# v6: adds operation-bound attachment.stage/consume/discard RPCs for eager mobile uploads.
+DESKTOP_BACKEND_CONTRACT = 6
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -7540,6 +7568,7 @@ def _enqueue_prompt(
     text: Any,
     transport: Any,
     image_paths: list[str] | None = None,
+    notify_response_complete: bool = False,
 ) -> None:
     """Stash a message to run as the very next turn once the live one ends.
 
@@ -7551,7 +7580,11 @@ def _enqueue_prompt(
     sent it even if the session transport is rebound meanwhile.
     """
     image_paths = list(image_paths or [])
-    queued = {"text": text, "transport": transport}
+    queued = {
+        "text": text,
+        "transport": transport,
+        "notify_response_complete": bool(notify_response_complete),
+    }
     if image_paths:
         queued["image_paths"] = image_paths
     existing = session.get("queued_prompt")
@@ -7565,6 +7598,9 @@ def _enqueue_prompt(
     ):
         prev = existing["text"]
         existing["text"] = f"{prev}\n\n{text}" if prev and text else (prev or text)
+        existing["notify_response_complete"] = bool(
+            existing.get("notify_response_complete") or notify_response_complete
+        )
         return
     if existing:
         session.setdefault("queued_prompts", []).append(queued)
@@ -7608,7 +7644,13 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
 
 
 def _handle_busy_submit(
-    rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    transport: Any,
+    queued: bool = False,
+    notify_response_complete: bool = False,
 ) -> dict | None:
     """Apply the ``display.busy_input_mode`` policy to a prompt that lands while
     a turn is in flight, instead of rejecting it with ``session busy``.
@@ -7681,7 +7723,13 @@ def _handle_busy_submit(
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None
-        _enqueue_prompt(session, text, transport, image_paths=image_paths)
+        _enqueue_prompt(
+            session,
+            text,
+            transport,
+            image_paths=image_paths,
+            notify_response_complete=notify_response_complete,
+        )
         session["last_active"] = time.time()
 
     # Attachments need a separate model invocation. Queue them without
@@ -7725,11 +7773,17 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                     session,
                     queued["text"],
                     image_paths=queued["image_paths"],
+                    notify_response_complete=bool(queued.get("notify_response_complete")),
                     queued_prompt_generation=queue_generation,
                 )
             else:
                 resp = _submit_prompt_to_compute_host(
-                    rid, sid, session, queued["text"], queued_prompt_generation=queue_generation
+                    rid,
+                    sid,
+                    session,
+                    queued["text"],
+                    notify_response_complete=bool(queued.get("notify_response_complete")),
+                    queued_prompt_generation=queue_generation,
                 )
             if resp.get("error"):
                 message = str(((resp.get("error") or {}).get("message")) or "queued prompt failed")
@@ -7746,6 +7800,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                     session,
                     queued["text"],
                     image_paths=queued["image_paths"],
+                    notify_response_complete=bool(queued.get("notify_response_complete")),
                     queued_prompt_generation=queue_generation,
                 )
             else:
@@ -7754,6 +7809,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                     sid,
                     session,
                     queued["text"],
+                    notify_response_complete=bool(queued.get("notify_response_complete")),
                     queued_prompt_generation=queue_generation,
                 )
     except Exception as exc:
@@ -9669,6 +9725,7 @@ def _run_prompt_submit(
     display_kind: str | None = None,
     display_metadata: dict | None = None,
     image_paths: list[str] | None = None,
+    notify_response_complete: bool = False,
     queued_prompt_generation: int | None = None,
 ) -> None:
     with session["history_lock"]:
@@ -10186,6 +10243,10 @@ def _run_prompt_submit(
                 payload["recoverable"] = True
             _retire_turn_marker(session, marker_key)
             _emit("message.complete", sid, payload)
+            if status == "complete" and isinstance(raw, str) and raw.strip():
+                _emit_mobile_response_completion(
+                    sid, session, marker_key, eligible=notify_response_complete
+                )
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
             # After every TUI turn, if a /goal is active, ask the judge

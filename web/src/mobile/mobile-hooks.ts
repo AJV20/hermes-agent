@@ -22,6 +22,7 @@ export function useMobileViewportSync() {
 
     settle()
     window.addEventListener('resize', sync)
+    window.addEventListener('scroll', sync)
     window.addEventListener('orientationchange', settle)
     window.addEventListener('pageshow', settle)
     window.visualViewport?.addEventListener('resize', sync)
@@ -30,6 +31,7 @@ export function useMobileViewportSync() {
 
     return () => {
       window.removeEventListener('resize', sync)
+      window.removeEventListener('scroll', sync)
       window.removeEventListener('orientationchange', settle)
       window.removeEventListener('pageshow', settle)
       window.visualViewport?.removeEventListener('resize', sync)

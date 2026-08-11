@@ -70,6 +70,23 @@ describe('PushSettingsScreen', () => {
     expect(checkboxes[3].checked).toBe(true)
   })
 
+  it('enables successful response alerts by default on a new device', async () => {
+    apiMocks.getMobilePushSubscription.mockResolvedValue({ subscription: null })
+    await render('default')
+
+    const checkboxes = [...container.querySelectorAll('input[type="checkbox"]')] as HTMLInputElement[]
+    expect(checkboxes[1].checked).toBe(true)
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Enable push notifications"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    expect(pushMocks.enableMobilePush).toHaveBeenCalledWith(
+      'default',
+      'B'.repeat(87),
+      expect.arrayContaining(['success', 'warning', 'error'])
+    )
+  })
+
   it('ignores a stale capability response from the previous profile', async () => {
     let resolveOld!: (value: unknown) => void
     const old = new Promise(resolve => { resolveOld = resolve })

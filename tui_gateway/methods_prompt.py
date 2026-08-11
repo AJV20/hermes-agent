@@ -7,6 +7,7 @@ are rebound onto server.py's globals at install time — see method_ctx.py.
 from .method_ctx import HandlerRegistry
 
 import types
+from pathlib import Path
 
 _registry = HandlerRegistry()
 method = _registry.method
@@ -145,8 +146,13 @@ def _(rid, params: dict) -> dict:
             else:
                 break
         busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport,
+            rid,
+            sid,
+            session,
+            text,
+            busy_transport,
             queued=bool(params.get("queued")),
+            notify_response_complete=True,
         )
         if busy_response is not None:
             return busy_response
@@ -283,7 +289,9 @@ def _(rid, params: dict) -> dict:
         _start_inflight_turn(session, text)
 
     if turn_isolation:
-        isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
+        isolated_response = _submit_prompt_to_compute_host(
+            rid, sid, session, text, notify_response_complete=True
+        )
         if not isolated_response.get("error"):
             return isolated_response
         logger.warning(
@@ -362,7 +370,7 @@ def _(rid, params: dict) -> dict:
                     },
                 )
                 return
-        _run_prompt_submit(rid, sid, session, text)
+        _run_prompt_submit(rid, sid, session, text, notify_response_complete=True)
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
     # Keep a handle so session.interrupt can tell a live turn from a stuck
@@ -690,6 +698,390 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5028, str(e))
 
 
+def _mobile_stage_identity(params: dict) -> tuple[str, str]:
+    import uuid
+
+    operation_id = str(params.get("mobile_operation_id") or "").strip().lower()
+    attachment_id = str(params.get("attachment_id") or "").strip().lower()
+    for value, label in ((operation_id, "mobile_operation_id"), (attachment_id, "attachment_id")):
+        try:
+            parsed = uuid.UUID(value)
+        except (ValueError, AttributeError):
+            raise ValueError(f"{label} must be a UUIDv4")
+        if parsed.version != 4 or str(parsed) != value:
+            raise ValueError(f"{label} must be a canonical UUIDv4")
+    return operation_id, attachment_id
+
+
+def _mobile_stage_home(params: dict) -> Path:
+    profile = str(params.get("profile") or "").strip() or _current_profile_name()
+    if profile == _current_profile_name():
+        return Path(_hermes_home).resolve()
+    profile_home = _profile_home(profile)
+    if profile_home is None:
+        raise ValueError("Unknown profile")
+    return Path(profile_home)
+
+def _mobile_stage_paths(home: Path, operation_id: str, attachment_id: str) -> tuple[Path, Path]:
+    root = home / "mobile-attachment-staging" / operation_id / attachment_id
+    return root / "payload.bin", root / "metadata.json"
+
+
+def _mobile_stage_ref(operation_id: str, attachment_id: str) -> str:
+    return f"v1.{operation_id}.{attachment_id}"
+
+
+def _parse_mobile_stage_ref(value: str) -> tuple[str, str]:
+    parts = str(value or "").split(".")
+    if len(parts) != 3 or parts[0] != "v1":
+        raise ValueError("invalid attachment stage reference")
+    return _mobile_stage_identity({"mobile_operation_id": parts[1], "attachment_id": parts[2]})
+
+
+def _mobile_stage_lock(stage_dir: Path):
+    """Cross-process exclusive lock for one operation/attachment identity."""
+    import contextlib
+    import fcntl
+    import os
+
+    @contextlib.contextmanager
+    def locked():
+        stage_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        lock_path = stage_dir / ".lock"
+        handle = open(lock_path, "a+b")
+        os.chmod(lock_path, 0o600)
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
+
+    return locked()
+
+
+def _mobile_write_stage_file(path: Path, data: bytes) -> None:
+    import os
+    import uuid
+
+    temp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(temp, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp, 0o600)
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def _mobile_stage_publish(payload_path: Path, metadata_path: Path, payload: bytes, metadata: dict) -> bool:
+    """Atomically publish one immutable stage generation. Returns True when created."""
+    import hashlib
+    import json
+
+    with _mobile_stage_lock(payload_path.parent):
+        if payload_path.is_file() and metadata_path.is_file():
+            current = json.loads(metadata_path.read_text(encoding="utf-8"))
+            current_payload = payload_path.read_bytes()
+            current_digest = hashlib.sha256(current_payload).hexdigest()
+            if current.get("sha256") != current_digest:
+                raise RuntimeError("staged attachment integrity check failed")
+            if current_digest != metadata.get("sha256"):
+                raise FileExistsError("attachment identity already contains different bytes")
+            return False
+        payload_path.unlink(missing_ok=True)
+        metadata_path.unlink(missing_ok=True)
+        _mobile_write_stage_file(payload_path, payload)
+        _mobile_write_stage_file(
+            metadata_path,
+            json.dumps(metadata, sort_keys=True).encode("utf-8"),
+        )
+        return True
+
+
+def _mobile_stage_discard_locked(payload_path: Path, metadata_path: Path) -> bool:
+    """Discard an unconsumed stage while serialized with stage/consume."""
+    import json
+
+    with _mobile_stage_lock(payload_path.parent):
+        if metadata_path.is_file():
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if metadata.get("consumed_session"):
+                raise PermissionError("consumed attachment cannot be discarded")
+        existed = payload_path.exists() or metadata_path.exists()
+        payload_path.unlink(missing_ok=True)
+        metadata_path.unlink(missing_ok=True)
+        for temp in payload_path.parent.glob("*.tmp"):
+            temp.unlink(missing_ok=True)
+        return existed
+
+
+def _mobile_prune_stages(home: Path, *, now: float | None = None, max_age_seconds: float = 24 * 60 * 60) -> int:
+    """Bounded opportunistic cleanup of expired staged bytes and receipts."""
+    import json
+    import time
+
+    cutoff = (time.time() if now is None else now) - max_age_seconds
+    root = home / "mobile-attachment-staging"
+    if not root.is_dir():
+        return 0
+    removed = 0
+    cursor_path = root / ".prune-cursor"
+    with _mobile_stage_lock(root):
+        import bisect
+
+        keyed_candidates = sorted(
+            (
+                stage_dir.relative_to(root).as_posix(),
+                stage_dir,
+            )
+            for stage_dir in root.glob("*/*")
+        )
+        if not keyed_candidates:
+            cursor_path.unlink(missing_ok=True)
+            return 0
+        keys = [key for key, _stage_dir in keyed_candidates]
+        try:
+            cursor_key = cursor_path.read_text(encoding="utf-8")
+        except Exception:
+            cursor_key = ""
+        start = bisect.bisect_right(keys, cursor_key)
+        if start >= len(keyed_candidates):
+            start = 0
+        count = min(256, len(keyed_candidates))
+        selected = [
+            keyed_candidates[(start + offset) % len(keyed_candidates)]
+            for offset in range(count)
+        ]
+        candidates = [stage_dir for _key, stage_dir in selected]
+        _mobile_write_stage_file(
+            cursor_path, selected[-1][0].encode("utf-8")
+        )
+    for stage_dir in candidates:
+        if not stage_dir.is_dir():
+            continue
+        with _mobile_stage_lock(stage_dir):
+            metadata_path = stage_dir / "metadata.json"
+            payload_path = stage_dir / "payload.bin"
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                timestamp = float(metadata.get("consumed_at") or metadata.get("created_at") or 0)
+            except Exception:
+                timestamp = min(
+                    (path.stat().st_mtime for path in (payload_path, metadata_path) if path.exists()),
+                    default=0,
+                )
+            if timestamp > cutoff:
+                continue
+            existed = payload_path.exists() or metadata_path.exists()
+            payload_path.unlink(missing_ok=True)
+            metadata_path.unlink(missing_ok=True)
+            for temp in stage_dir.glob("*.tmp"):
+                temp.unlink(missing_ok=True)
+            if existed:
+                removed += 1
+    return removed
+
+
+def _mobile_prune_all_profile_stages(
+    *, now: float | None = None, max_age_seconds: float = 24 * 60 * 60
+) -> int:
+    """Prune staged bytes for every local profile, independent of later RPC traffic."""
+    from hermes_cli.profiles import get_profile_dir
+
+    homes = {Path(_hermes_home).resolve()}
+    try:
+        default_home = Path(get_profile_dir("default")).resolve()
+        homes.add(default_home)
+        profiles_root = default_home / "profiles"
+        if profiles_root.is_dir():
+            homes.update(path.resolve() for path in profiles_root.iterdir() if path.is_dir())
+    except Exception:
+        pass
+    return sum(
+        _mobile_prune_stages(home, now=now, max_age_seconds=max_age_seconds)
+        for home in homes
+    )
+
+
+def _mobile_stage_cleanup_loop(
+    stop_event, *, interval_seconds: float = 60 * 60
+) -> None:
+    """Run startup and periodic TTL enforcement until the gateway exits."""
+    while True:
+        try:
+            _mobile_prune_all_profile_stages()
+        except Exception:
+            pass
+        if stop_event.wait(interval_seconds):
+            return
+
+
+def _mobile_stage_consume_locked(
+    payload_path: Path,
+    metadata_path: Path,
+    session_identity: str,
+    consume,
+) -> dict:
+    """Claim and materialize a stage exactly once while holding its cross-process lock."""
+    import hashlib
+    import json
+    import time
+
+    with _mobile_stage_lock(payload_path.parent):
+        if not payload_path.is_file() or not metadata_path.is_file():
+            raise FileNotFoundError("staged attachment not found")
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        payload = payload_path.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != metadata.get("sha256"):
+            raise RuntimeError("staged attachment integrity check failed")
+        previous_session = metadata.get("consumed_session")
+        previous = metadata.get("consumed_result")
+        if previous_session:
+            if previous_session != session_identity:
+                raise PermissionError("staged attachment belongs to another session")
+            if isinstance(previous, dict):
+                return previous
+            raise RuntimeError("staged attachment claim is incomplete")
+        result = consume(payload, metadata)
+        metadata["consumed_at"] = time.time()
+        metadata["consumed_result"] = result
+        metadata["consumed_session"] = session_identity
+        _mobile_write_stage_file(
+            metadata_path,
+            json.dumps(metadata, sort_keys=True).encode("utf-8"),
+        )
+        return result
+
+
+@method("attachment.stage")
+def _(rid, params: dict) -> dict:
+    """Durably stage mobile attachment bytes before a chat/session is created."""
+    import hashlib
+    import time
+
+    try:
+        operation_id, attachment_id = _mobile_stage_identity(params)
+        data_url = str(params.get("data_url") or "").strip()
+        if not data_url:
+            return _err(rid, 4015, "data_url required")
+        payload = _decode_attachment_data_url(data_url)
+        if not payload:
+            return _err(rid, 4017, "attachment is empty")
+        if len(payload) > _ATTACH_BYTES_MAX_BYTES:
+            return _err(rid, 4018, "attachment exceeds the upload size limit")
+        filename = _sanitize_attachment_name(str(params.get("filename") or "attachment"))
+        mime_type = str(params.get("mime_type") or "application/octet-stream")[:255]
+        home = _mobile_stage_home(params)
+        _mobile_prune_stages(home)
+        payload_path, metadata_path = _mobile_stage_paths(home, operation_id, attachment_id)
+        digest = hashlib.sha256(payload).hexdigest()
+        _mobile_stage_publish(payload_path, metadata_path, payload, {
+            "attachment_id": attachment_id,
+            "created_at": time.time(),
+            "filename": filename,
+            "mime_type": mime_type,
+            "operation_id": operation_id,
+            "sha256": digest,
+            "version": 1,
+        })
+        return _ok(rid, {
+            "attachment_id": attachment_id,
+            "bytes": len(payload),
+            "stage_ref": _mobile_stage_ref(operation_id, attachment_id),
+            "staged": True,
+        })
+    except FileExistsError as exc:
+        return _err(rid, 4091, str(exc))
+    except Exception as exc:
+        return _err(rid, 5028, str(exc))
+
+
+@method("attachment.discard")
+def _(rid, params: dict) -> dict:
+    """Idempotently invalidate one unconsumed mobile attachment stage."""
+    try:
+        operation_id, attachment_id = _mobile_stage_identity(params)
+        ref_operation, ref_attachment = _parse_mobile_stage_ref(str(params.get("stage_ref") or ""))
+        if (operation_id, attachment_id) != (ref_operation, ref_attachment):
+            return _err(rid, 4091, "attachment stage identity mismatch")
+        payload_path, metadata_path = _mobile_stage_paths(
+            _mobile_stage_home(params), operation_id, attachment_id
+        )
+        existed = _mobile_stage_discard_locked(payload_path, metadata_path)
+        return _ok(rid, {"discarded": existed})
+    except PermissionError as exc:
+        return _err(rid, 4091, str(exc))
+    except Exception as exc:
+        return _err(rid, 5028, str(exc))
+
+
+@method("attachment.consume")
+def _(rid, params: dict) -> dict:
+    """Idempotently bind operation-staged attachments to the exact runtime session."""
+    import base64
+    import json
+    import os
+
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    try:
+        operation_id = str(params.get("mobile_operation_id") or "").strip().lower()
+        stage_refs = params.get("stage_refs")
+        if not isinstance(stage_refs, list) or not stage_refs:
+            return _err(rid, 4015, "stage_refs required")
+        session_home = Path(session.get("profile_home") or _hermes_home).resolve()
+        requested_home = _mobile_stage_home(params)
+        if session_home != requested_home:
+            return _err(rid, 4031, "attachment profile does not match session profile")
+        _mobile_prune_stages(requested_home)
+        session_identity = str(session.get("session_key") or params.get("session_id") or "")
+        consumed = []
+        for stage_ref in stage_refs:
+            ref_operation, attachment_id = _parse_mobile_stage_ref(str(stage_ref))
+            if ref_operation != operation_id:
+                return _err(rid, 4091, "attachment operation mismatch")
+            payload_path, metadata_path = _mobile_stage_paths(
+                requested_home, ref_operation, attachment_id
+            )
+            def materialize(payload, metadata):
+                filename = str(metadata.get("filename") or "attachment")
+                mime_type = str(metadata.get("mime_type") or "")
+                ext = _sniff_image_ext(payload, filename)
+                if mime_type.startswith("image/") and ext in _allowed_image_extensions():
+                    image_path = _queue_attached_image(session, payload, ext, prefix="mobile")
+                    return {"attachment_id": attachment_id, "kind": "image", "path": str(image_path)}
+                data_url = "data:application/octet-stream;base64," + base64.b64encode(payload).decode("ascii")
+                stored_path, _uploaded = _stage_session_file_attachment(
+                    session, raw_path="", data_url=data_url, name=filename
+                )
+                ref_path = _attachment_ref_path(session, stored_path)
+                return {
+                    "attachment_id": attachment_id,
+                    "kind": "file",
+                    "ref_text": f"@file:{_format_ref_value(ref_path)}",
+                }
+
+            result = _mobile_stage_consume_locked(
+                payload_path, metadata_path, session_identity, materialize
+            )
+            if result.get("kind") == "image" and result.get("path"):
+                images = session.setdefault("attached_images", [])
+                if result["path"] not in images:
+                    images.append(result["path"])
+            consumed.append(result)
+        return _ok(rid, {"consumed": consumed})
+    except FileNotFoundError as exc:
+        return _err(rid, 4041, str(exc))
+    except PermissionError as exc:
+        return _err(rid, 4091, str(exc))
+    except Exception as exc:
+        return _err(rid, 5028, str(exc))
+
+
 @method("image.detach")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
@@ -989,6 +1381,41 @@ def _(rid, params: dict) -> dict:
 
 def register(server) -> None:
     """Bind this module's handlers onto ``server``'s globals and registry."""
+    for name in (
+        "_mobile_stage_identity",
+        "_mobile_stage_home",
+        "_mobile_stage_lock",
+        "_mobile_stage_paths",
+        "_mobile_stage_publish",
+        "_mobile_prune_stages",
+        "_mobile_prune_all_profile_stages",
+        "_mobile_stage_cleanup_loop",
+        "_mobile_stage_ref",
+        "_mobile_stage_consume_locked",
+        "_mobile_stage_discard_locked",
+        "_mobile_write_stage_file",
+        "_parse_mobile_stage_ref",
+    ):
+        helper = globals()[name]
+        rebound = types.FunctionType(
+            helper.__code__, vars(server), helper.__name__, helper.__defaults__, helper.__closure__
+        )
+        rebound.__kwdefaults__ = helper.__kwdefaults__
+        setattr(server, name, rebound)
+    if not getattr(server, "_mobile_stage_cleanup_started", False):
+        import threading
+
+        stop_event = threading.Event()
+        cleanup_thread = threading.Thread(
+            target=server._mobile_stage_cleanup_loop,
+            args=(stop_event,),
+            name="mobile-stage-cleanup",
+            daemon=True,
+        )
+        server._mobile_stage_cleanup_started = True
+        server._mobile_stage_cleanup_stop = stop_event
+        server._mobile_stage_cleanup_thread = cleanup_thread
+        cleanup_thread.start()
     _registry.install(server)
     # Module-level helpers aren't @method handlers, so install() doesn't see
     # them — but server.py's run path calls this one (run_message enrichment,

@@ -43,4 +43,23 @@ describe('useMobileViewportSync', () => {
 
     expect(document.documentElement.style.getPropertyValue('--mobile-app-height')).toBe('551px')
   })
+
+  it('remeasures when installed iOS pans the document without changing visualViewport.offsetTop', () => {
+    const visualViewport = Object.assign(new EventTarget(), { height: 168, offsetTop: 0, pageTop: 0 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 })
+    Object.defineProperty(window, 'visualViewport', { configurable: true, value: visualViewport })
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    containers.push(container)
+    const root = createRoot(container)
+    roots.push(root)
+
+    act(() => root.render(<ViewportHarness />))
+    expect(document.documentElement.style.getPropertyValue('--mobile-app-height')).toBe('168px')
+
+    visualViewport.pageTop = 383
+    act(() => window.dispatchEvent(new Event('scroll')))
+
+    expect(document.documentElement.style.getPropertyValue('--mobile-app-height')).toBe('551px')
+  })
 })

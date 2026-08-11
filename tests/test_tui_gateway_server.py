@@ -324,7 +324,7 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
-        lambda rid, sid, _session, text: inline_calls.append((rid, sid, text)),
+        lambda rid, sid, _session, text, **kwargs: inline_calls.append((rid, sid, text, kwargs)),
     )
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
 
@@ -344,7 +344,12 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
         "id": "fallback-turn",
         "result": {"status": "streaming"},
     }
-    assert inline_calls == [("fallback-turn", "iso-fallback", "hello")]
+    assert inline_calls == [(
+        "fallback-turn",
+        "iso-fallback",
+        "hello",
+        {"notify_response_complete": True},
+    )]
     assert session.get("_compute_host_active") is not True
 
 
@@ -525,6 +530,12 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
                 server._emit("message.start", sid)
                 server._emit("message.delta", sid, {"text": "hi"})
                 server._emit("message.complete", sid, {"text": "hi", "usage": usage, "status": "complete"})
+                server._emit_mobile_response_completion(
+                    sid,
+                    server._sessions[sid],
+                    "session-key",
+                    eligible=bool(frame.get("notify_response_complete")),
+                )
                 server._emit("session.info", sid, dict(fixed_info))
                 if on_complete is not None:
                     on_complete(

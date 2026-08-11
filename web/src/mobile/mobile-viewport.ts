@@ -2,7 +2,7 @@ type MobileViewportWindow = {
   innerHeight: number
   navigator?: { standalone?: boolean; userAgent?: string }
   screen?: { height: number }
-  visualViewport?: { height: number; offsetTop?: number } | null
+  visualViewport?: { height: number; offsetTop?: number; pageTop?: number } | null
 }
 
 type MobileViewportDocument = {
@@ -20,10 +20,15 @@ export function measureMobileViewportHeight(
   visualHeight: number | undefined,
   standaloneScreenHeight?: number,
   visualOffsetTop = 0,
+  visualPageTop?: number,
 ): number {
   const layoutHeight = innerHeight || clientHeight || visualHeight || standaloneScreenHeight || 0
+  const pageTop = typeof visualPageTop === 'number' && Number.isFinite(visualPageTop)
+    ? visualPageTop
+    : visualOffsetTop
+  const visualTop = Math.max(0, pageTop)
   const visibleBottom = visualHeight && visualHeight > 0
-    ? visualHeight + Math.max(0, visualOffsetTop)
+    ? visualHeight + visualTop
     : layoutHeight
   const measuredHeight = Math.min(layoutHeight, visibleBottom)
 
@@ -54,6 +59,7 @@ export function syncMobileViewportHeight(
     viewportWindow.visualViewport?.height,
     standaloneScreenHeight,
     viewportWindow.visualViewport?.offsetTop,
+    viewportWindow.visualViewport?.pageTop,
   )
   if (height > 0) {
     viewportDocument.documentElement.style.setProperty('--mobile-app-height', `${height}px`)

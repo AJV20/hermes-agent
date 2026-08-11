@@ -13,7 +13,7 @@ import {
 } from '../push'
 import { AppHeader } from '../ui/primitives'
 
-const DEFAULT_CATEGORIES: MobilePushSubscriptionRequest['categories'] = ['error', 'warning']
+const DEFAULT_CATEGORIES: MobilePushSubscriptionRequest['categories'] = ['success', 'warning', 'error']
 
 export function PushSettingsScreen({ profile }: { profile: string }) {
   const navigate = useNavigate()

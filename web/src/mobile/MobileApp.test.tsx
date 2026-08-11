@@ -357,7 +357,7 @@ describe('MobileApp', () => {
     expect(banner?.textContent).toContain('Finish or clear your draft, remove attachments, and stop any response before updating.')
 
     await act(async () => {
-      ;(container.querySelector('button[aria-label="Remove work.txt"]') as HTMLButtonElement).click()
+      ;(container.querySelector('button[aria-label="Remove work.txt"], button[aria-label="Cancel work.txt"]') as HTMLButtonElement).click()
     })
     await waitForReact(() => expect(install.disabled).toBe(false))
   })
@@ -849,8 +849,9 @@ describe('MobileApp', () => {
 
   it('sends a selected image through the live Hermes session', async () => {
     gatewayMocks.request.mockImplementation(async (method: string) => {
+      if (method === 'attachment.stage') return { attachment_id: 'attachment-1', stage_ref: 'stage-ref-1', staged: true }
       if (method === 'session.create') return { session_id: 'runtime-1', stored_session_id: 'stored-1' }
-      if (method === 'image.attach_bytes') return { attached: true, path: '/gateway/images/photo.png' }
+      if (method === 'attachment.consume') return { consumed: [{ attachment_id: 'attachment-1', kind: 'image' }] }
       return {}
     })
     await renderAt('/mobile/chat/new')
@@ -863,6 +864,12 @@ describe('MobileApp', () => {
     })
 
     expect(container.textContent).toContain('photo.png')
+    await waitForReact(() => {
+      expect(gatewayMocks.request.mock.calls.some(([method]) => method === 'attachment.stage')).toBe(true)
+      expect(container.textContent).toContain('staged')
+    })
+    expect(gatewayMocks.request.mock.calls.some(([method]) => method === 'session.create')).toBe(false)
+    expect(gatewayMocks.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(false)
     expect(container.querySelector('button[aria-label="Remove photo.png"]')).not.toBeNull()
 
     const textarea = container.querySelector('textarea') as HTMLTextAreaElement
@@ -879,15 +886,22 @@ describe('MobileApp', () => {
       })
     })
 
-    const attachCall = gatewayMocks.request.mock.calls.find(([method]) => method === 'image.attach_bytes')
+    const stageCalls = gatewayMocks.request.mock.calls.filter(([method]) => method === 'attachment.stage')
+    const stageCall = stageCalls[0]
+    const consumeCall = gatewayMocks.request.mock.calls.find(([method]) => method === 'attachment.consume')
     const submitCall = gatewayMocks.request.mock.calls.find(([method]) => method === 'prompt.submit')
-    expect(attachCall).toEqual([
-      'image.attach_bytes',
+    expect(stageCalls).toHaveLength(1)
+    expect(stageCall).toEqual([
+      'attachment.stage',
       expect.objectContaining({
-        content_base64: 'AQID',
+        data_url: 'data:image/png;base64,AQID',
         filename: 'photo.png',
-        session_id: 'runtime-1'
+        profile: 'default'
       })
+    ])
+    expect(consumeCall).toEqual([
+      'attachment.consume',
+      expect.objectContaining({ session_id: 'runtime-1', stage_refs: ['stage-ref-1'] })
     ])
     expect(submitCall).toEqual([
       'prompt.submit',
@@ -895,11 +909,44 @@ describe('MobileApp', () => {
     ])
   })
 
+  it('locks staged attachments once Send begins so cancellation cannot race session creation', async () => {
+    let resolveCreate!: (value: { session_id: string; stored_session_id: string }) => void
+    gatewayMocks.request.mockImplementation((method: string) => {
+      if (method === 'attachment.stage') return Promise.resolve({ staged: true, stage_ref: 'stage-ref-locked' })
+      if (method === 'session.create') return new Promise(resolve => { resolveCreate = resolve })
+      if (method === 'attachment.consume') return Promise.resolve({ consumed: [{ attachment_id: 'locked', kind: 'image' }] })
+      return Promise.resolve({})
+    })
+    await renderAt('/mobile/chat/new')
+
+    const picker = container.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['photo'], 'locked.png', { type: 'image/png' })
+    Object.defineProperty(picker, 'files', { configurable: true, value: [file] })
+    await act(async () => picker.dispatchEvent(new Event('change', { bubbles: true })))
+    await waitForReact(() => expect(container.textContent).toContain('staged'))
+
+    const form = container.querySelector('form') as HTMLFormElement
+    await act(async () => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
+    await waitForReact(() => expect(gatewayMocks.request.mock.calls.some(([method]) => method === 'session.create')).toBe(true))
+
+    const remove = container.querySelector('button[aria-label="Remove locked.png"]') as HTMLButtonElement
+    expect(remove.disabled).toBe(true)
+    await act(async () => remove.click())
+    expect(gatewayMocks.request.mock.calls.some(([method]) => method === 'attachment.discard')).toBe(false)
+
+    await act(async () => {
+      resolveCreate({ session_id: 'runtime-locked', stored_session_id: 'stored-locked' })
+      await Promise.resolve()
+    })
+    await waitForReact(() => expect(gatewayMocks.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(true))
+  })
+
   it('stages a selected PDF as a gateway-readable file without requiring local PDF tools', async () => {
     gatewayMocks.request.mockImplementation(async (method: string) => {
+      if (method === 'attachment.stage') return { staged: true, stage_ref: 'stage-ref-pdf' }
       if (method === 'session.create') return { session_id: 'runtime-1', stored_session_id: 'stored-1' }
-      if (method === 'file.attach') {
-        return { attached: true, ref_text: '@file:.hermes/desktop-attachments/report.pdf' }
+      if (method === 'attachment.consume') {
+        return { consumed: [{ attachment_id: 'pdf', kind: 'file', ref_text: '@file:.hermes/desktop-attachments/report.pdf' }] }
       }
       return {}
     })
@@ -927,15 +974,16 @@ describe('MobileApp', () => {
     })
 
     expect(gatewayMocks.request).toHaveBeenCalledWith(
-      'file.attach',
+      'attachment.stage',
       expect.objectContaining({
         data_url: 'data:application/pdf;base64,JVBERi0=',
-        name: 'report.pdf',
-        session_id: 'runtime-1'
+        filename: 'report.pdf'
       })
     )
-    const fileAttachCall = gatewayMocks.request.mock.calls.find(([method]) => method === 'file.attach')
-    expect(fileAttachCall?.[1]).not.toHaveProperty('path')
+    expect(gatewayMocks.request).toHaveBeenCalledWith(
+      'attachment.consume',
+      expect.objectContaining({ session_id: 'runtime-1', stage_refs: ['stage-ref-pdf'] })
+    )
     expect(gatewayMocks.request).toHaveBeenCalledWith(
       'prompt.submit',
       {
@@ -947,9 +995,10 @@ describe('MobileApp', () => {
 
   it('stages a selected document and includes its gateway file reference in the prompt', async () => {
     gatewayMocks.request.mockImplementation(async (method: string) => {
+      if (method === 'attachment.stage') return { staged: true, stage_ref: 'stage-ref-notes' }
       if (method === 'session.create') return { session_id: 'runtime-1', stored_session_id: 'stored-1' }
-      if (method === 'file.attach') {
-        return { attached: true, ref_text: '@file:.hermes/desktop-attachments/notes.txt' }
+      if (method === 'attachment.consume') {
+        return { consumed: [{ attachment_id: 'notes', kind: 'file', ref_text: '@file:.hermes/desktop-attachments/notes.txt' }] }
       }
       return {}
     })
@@ -977,15 +1026,16 @@ describe('MobileApp', () => {
     })
 
     expect(gatewayMocks.request).toHaveBeenCalledWith(
-      'file.attach',
+      'attachment.stage',
       expect.objectContaining({
         data_url: 'data:text/plain;base64,aGVsbG8=',
-        name: 'notes.txt',
-        session_id: 'runtime-1'
+        filename: 'notes.txt'
       })
     )
-    const fileAttachCall = gatewayMocks.request.mock.calls.find(([method]) => method === 'file.attach')
-    expect(fileAttachCall?.[1]).not.toHaveProperty('path')
+    expect(gatewayMocks.request).toHaveBeenCalledWith(
+      'attachment.consume',
+      expect.objectContaining({ session_id: 'runtime-1', stage_refs: ['stage-ref-notes'] })
+    )
     expect(gatewayMocks.request).toHaveBeenCalledWith(
       'prompt.submit',
       {
@@ -1066,16 +1116,11 @@ describe('MobileApp', () => {
       Object.defineProperty(picker, 'files', { configurable: true, value: [first, second] })
       await act(async () => picker.dispatchEvent(new Event('change', { bubbles: true })))
 
-      const form = container.querySelector('form') as HTMLFormElement
-      await act(async () => {
-        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-        await waitForReact(() => expect(pendingReads).toHaveLength(1))
-        pendingReads[0]()
-        await waitForReact(() => expect(pendingReads).toHaveLength(2))
-      })
+      await waitForReact(() => expect(pendingReads).toHaveLength(2))
       await act(async () => {
         ;(container.querySelector('button[aria-label="Cancel first.txt"]') as HTMLButtonElement).click()
         ;(container.querySelector('button[aria-label="Cancel second.txt"]') as HTMLButtonElement).click()
+        pendingReads[0]()
         pendingReads[1]()
         await Promise.resolve()
       })
@@ -1095,7 +1140,7 @@ describe('MobileApp', () => {
     let rejectAttach!: (error: Error) => void
     gatewayMocks.request.mockImplementation((method: string) => {
       if (method === 'session.create') return Promise.resolve({ session_id: 'runtime-1', stored_session_id: 'stored-1' })
-      if (method === 'file.attach') {
+      if (method === 'attachment.stage') {
         return new Promise((_resolve, reject) => {
           rejectAttach = reject
         })
@@ -1105,17 +1150,13 @@ describe('MobileApp', () => {
     await renderAt('/mobile/chat/new')
 
     const picker = container.querySelector('input[type="file"]') as HTMLInputElement
-    const form = container.querySelector('form') as HTMLFormElement
     const first = new File(['first'], 'first.txt', { type: 'text/plain' })
     Object.defineProperty(picker, 'files', { configurable: true, value: [first] })
     await act(async () => picker.dispatchEvent(new Event('change', { bubbles: true })))
 
-    await act(async () => {
-      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-      await waitForReact(() => expect(gatewayMocks.request.mock.calls.some(([method]) => method === 'file.attach')).toBe(true))
-    })
-    expect(picker.disabled).toBe(true)
-    expect((container.querySelector('button[aria-label="Add attachment"]') as HTMLButtonElement).disabled).toBe(true)
+    await waitForReact(() => expect(gatewayMocks.request.mock.calls.some(([method]) => method === 'attachment.stage')).toBe(true))
+    expect(picker.disabled).toBe(false)
+    expect((container.querySelector('button[aria-label="Add attachment"]') as HTMLButtonElement).disabled).toBe(false)
 
     const second = new File(['second'], 'second.txt', { type: 'text/plain' })
     Object.defineProperty(picker, 'files', { configurable: true, value: [second] })
@@ -2110,7 +2151,11 @@ describe('MobileApp', () => {
     expect(container.querySelector('button[aria-label="Start voice dictation"]')).toBeNull()
   })
 
-  it('shows an image thumbnail and revokes its object URL when removed', async () => {
+  it('shows an image thumbnail, discards the staged upload, and revokes its object URL when removed', async () => {
+    gatewayMocks.request.mockImplementation(async (method: string) => {
+      if (method === 'attachment.stage') return { staged: true, stage_ref: 'stage-ref-thumbnail' }
+      return {}
+    })
     const createObjectURL = vi.fn(() => 'blob:photo-preview')
     const revokeObjectURL = vi.fn()
     vi.stubGlobal('URL', { createObjectURL, revokeObjectURL })
@@ -2122,7 +2167,11 @@ describe('MobileApp', () => {
     await act(async () => picker.dispatchEvent(new Event('change', { bubbles: true })))
 
     expect(container.querySelector('img[alt="Preview thumbnail.png"]')?.getAttribute('src')).toBe('blob:photo-preview')
+    await waitForReact(() => expect(container.querySelector('button[aria-label="Remove thumbnail.png"]')).not.toBeNull())
     await act(async () => (container.querySelector('button[aria-label="Remove thumbnail.png"]') as HTMLButtonElement).click())
+    expect(gatewayMocks.request).toHaveBeenCalledWith('attachment.discard', expect.objectContaining({
+      stage_ref: 'stage-ref-thumbnail'
+    }))
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:photo-preview')
   })
 

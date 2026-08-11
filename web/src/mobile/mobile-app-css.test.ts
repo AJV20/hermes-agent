@@ -47,6 +47,17 @@ describe('mobile bottom navigation layout', () => {
     expect(textarea).not.toContain('font-size: 0.82rem')
   })
 
+  it('gives every visible composer tool a full touch target without clipping the camera control', () => {
+    const composer = styles.match(/\.mobile-composer\s*\{([^}]*)\}/)?.[1] ?? ''
+    const tools = styles.match(/\.mobile-composer-tools\s*\{([^}]*)\}/)?.[1] ?? ''
+    const toolButton = styles.match(/\.mobile-composer-tools \.mobile-icon-button\s*\{([^}]*)\}/)?.[1] ?? ''
+
+    expect(composer).toContain('grid-template-columns: max-content minmax(0, 1fr) 3rem')
+    expect(tools).not.toContain('overflow-x: auto')
+    expect(toolButton).toContain('flex: 0 0 44px')
+    expect(toolButton).toContain('width: 44px')
+  })
+
   it('keeps compact controls at least 44 CSS pixels tall', () => {
     const iconButton = styles.match(/\.mobile-icon-button\s*\{([^}]*)\}/)?.[1] ?? ''
     const sectionLink = styles.match(/\.mobile-section-heading a\s*\{([^}]*)\}/)?.[1] ?? ''

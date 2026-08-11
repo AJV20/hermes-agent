@@ -61,6 +61,8 @@ export function ChatScreen({
   )
   const isNew = storedSessionId === 'new'
   const runtimeId = useRef<string | null>(null)
+  const runtimeSessionPromise = useRef<Promise<string> | null>(null)
+  const draftOperationId = useRef<string | null>(null)
   const pendingStoredId = useRef<string | null>(null)
   const legacyMigrationKey = useRef<string | null>(null)
   const submitInFlight = useRef(false)
@@ -339,15 +341,96 @@ export function ChatScreen({
   const expiredClarify = actions.pending?.kind === 'clarify' && actions.pending.status === 'expired'
   const composerBusy = chat.busy && !expiredClarify
 
+  const ensureRuntimeSession = useCallback((title: string, operationId: string = crypto.randomUUID()) => {
+    if (runtimeId.current) return Promise.resolve(runtimeId.current)
+    if (runtimeSessionPromise.current) return runtimeSessionPromise.current
+    const creating = gateway.request<{ session_id: string; stored_session_id?: string | null }>(
+      'session.create',
+      {
+        cols: 48,
+        mobile_operation_id: operationId,
+        ...(profile ? { profile } : {}),
+        source: 'web',
+        title: title.slice(0, 72)
+      }
+    ).then(created => {
+      runtimeId.current = created.session_id
+      pendingStoredId.current = created.stored_session_id || created.session_id
+      return created.session_id
+    }).finally(() => {
+      if (runtimeSessionPromise.current === creating) runtimeSessionPromise.current = null
+    })
+    runtimeSessionPromise.current = creating
+    return creating
+  }, [gateway, profile])
+
+  const stageAttachment = useCallback(async (attachment: MobileAttachment) => {
+    if (attachment.status !== 'selected' && attachment.status !== 'failed') return
+    canceledAttachmentIds.current.delete(attachment.id)
+    const operationId = draftOperationId.current || crypto.randomUUID()
+    draftOperationId.current = operationId
+    setAttachments(current => current.map(item => item.id === attachment.id
+      ? { ...item, error: undefined, status: 'reading' }
+      : item
+    ))
+    try {
+      const dataUrl = await readFileAsDataUrl(attachment.file)
+      if (canceledAttachmentIds.current.has(attachment.id)) return
+      setAttachments(current => current.map(item => item.id === attachment.id
+        ? { ...item, status: 'uploading' }
+        : item
+      ))
+      const staged = await gateway.request<{ attachment_id?: string; message?: string; stage_ref?: string; staged?: boolean }>('attachment.stage', {
+        attachment_id: attachment.id,
+        data_url: dataUrl,
+        filename: attachment.file.name,
+        mime_type: attachment.file.type,
+        mobile_operation_id: operationId,
+        profile: profile || 'default'
+      })
+      if (!staged.staged || !staged.stage_ref) {
+        throw new Error(staged.message || `Could not upload ${attachment.file.name}`)
+      }
+      if (canceledAttachmentIds.current.has(attachment.id)) {
+        await gateway.request('attachment.discard', {
+          attachment_id: attachment.id,
+          mobile_operation_id: operationId,
+          profile: profile || 'default',
+          stage_ref: staged.stage_ref
+        })
+        return
+      }
+      setAttachments(current => current.map(item => item.id === attachment.id
+        ? { ...item, stageRef: staged.stage_ref, status: 'staged' }
+        : item
+      ))
+    } catch (error) {
+      if (canceledAttachmentIds.current.has(attachment.id)) return
+      const message = error instanceof Error ? error.message : `Could not upload ${attachment.file.name}`
+      setAttachments(current => current.map(item => item.id === attachment.id
+        ? { ...item, error: message, status: 'failed' }
+        : item
+      ))
+    }
+  }, [gateway, profile])
+
+  useEffect(() => {
+    if (!ready || chat.busy) return
+    attachments.filter(attachment => attachment.status === 'selected').forEach(attachment => {
+      void stageAttachment(attachment)
+    })
+  }, [attachments, chat.busy, ready, stageAttachment])
+
   const reviewSavedOperation = useCallback((operation: MobileOutboxOperation) => {
     if (draft.trim() || attachments.length) {
       setChat(current => ({ ...current, error: 'Clear or send the current draft before reviewing the saved message.' }))
       return
     }
     setDraft(operation.text)
-    setAttachments(operation.attachments.map((attachment, index) => createMobileAttachment(
+    draftOperationId.current = operation.operationId
+    setAttachments(operation.attachments.map(attachment => createMobileAttachment(
       new File([attachment.blob], attachment.name, { lastModified: attachment.lastModified, type: attachment.type }),
-      `${operation.operationId}-${index}`
+      crypto.randomUUID()
     )))
     setReviewOperationId(operation.operationId)
     setChat(current => ({ ...current, error: null }))
@@ -370,6 +453,10 @@ export function ChatScreen({
         text
       }
       if ((!text && !pendingAttachments.length) || (chat.busy && !expiredClarify) || submitInFlight.current) return
+      if (ready && pendingAttachments.some(attachment => attachment.status !== 'staged')) {
+        setChat(current => ({ ...current, error: 'Wait for attachments to finish uploading, or remove any failed attachment.' }))
+        return
+      }
       const reviewRevision = reviewOperationId
         ? recoveryOperations.find(operation => operation.operationId === reviewOperationId)?.revision
         : undefined
@@ -383,13 +470,18 @@ export function ChatScreen({
         try {
           const operation = reviewOperationId
             ? await outbox.replaceReady(reviewOperationId, reviewRevision!, durableInput)
-            : await outbox.createReady(durableInput)
+            : await outbox.createReady(durableInput, draftOperationId.current || undefined)
           setRecoveryOperations(current => [
             ...current.filter(item => item.operationId !== operation.operationId),
             operation
           ])
           setReviewOperationId(null)
           setDraft('')
+          draftOperationId.current = null
+          setAttachments(current => {
+            current.forEach(revokeAttachmentPreview)
+            return []
+          })
           setOutboxNotice('Queued until Hermes reconnects. Review it before sending.')
           setChat(current => ({ ...current, error: null }))
         } catch (error) {
@@ -404,7 +496,7 @@ export function ChatScreen({
       try {
         persistedOperation = reviewOperationId
           ? await outbox.replaceReady(reviewOperationId, reviewRevision!, durableInput)
-          : await outbox.createReady(durableInput)
+          : await outbox.createReady(durableInput, draftOperationId.current || undefined)
       } catch (error) {
         submitInFlight.current = false
         setOutboxNotice(`${error instanceof Error ? error.message : 'Could not save message.'} Current composer is not saved for reload.`)
@@ -419,11 +511,6 @@ export function ChatScreen({
       const attachmentNames = pendingAttachments.map(attachment => attachment.file.name).join(', ')
       const optimisticContent = [text, attachmentNames ? `📎 ${attachmentNames}` : ''].filter(Boolean).join('\n')
       setDraft('')
-      setAttachments(current => current.map(attachment => (
-        pendingAttachments.some(pending => pending.id === attachment.id)
-          ? { ...attachment, error: undefined, status: 'reading' }
-          : attachment
-      )))
       setChat(current => ({
         ...current,
         busy: true,
@@ -457,17 +544,8 @@ export function ChatScreen({
       try {
         persistedOperation = await outbox.claim(persistedOperation.operationId, persistedOperation.revision, outboxOwnerId.current)
         claimAcquired = true
-        const preparedAttachments: Array<{ attachment: MobileAttachment; dataUrl: string }> = []
-        for (const attachment of pendingAttachments) {
-          if (canceledAttachmentIds.current.has(attachment.id)) continue
-          setAttachments(current => current.map(item => item.id === attachment.id ? { ...item, status: 'reading' } : item))
-          const dataUrl = await readFileAsDataUrl(attachment.file)
-          if (!canceledAttachmentIds.current.has(attachment.id)) {
-            preparedAttachments.push({ attachment, dataUrl })
-          }
-        }
-        const sendableAttachments = preparedAttachments.filter(
-          ({ attachment }) => !canceledAttachmentIds.current.has(attachment.id)
+        const sendableAttachments = pendingAttachments.filter(
+          attachment => attachment.status === 'staged' && !canceledAttachmentIds.current.has(attachment.id)
         )
         if (!text && !sendableAttachments.length) {
           await outbox.remove(persistedOperation.operationId, persistedOperation.revision, outboxOwnerId.current)
@@ -475,67 +553,36 @@ export function ChatScreen({
           return
         }
 
-        const sendableIds = new Set(sendableAttachments.map(({ attachment }) => attachment.id))
-        setAttachments(current => current.map(attachment => sendableIds.has(attachment.id)
-          ? { ...attachment, status: 'uploading' }
-          : attachment
-        ))
-
-        let sid = runtimeId.current
-        if (!sid) {
-          const created = await gateway.request<{ session_id: string; stored_session_id?: string | null }>(
-            'session.create',
-            {
-              cols: 48,
-              mobile_operation_id: persistedOperation.operationId,
-              ...(profile ? { profile } : {}),
-              source: 'web',
-              title: (text || attachmentNames || 'Attachment').slice(0, 72)
-            }
+        const sid = await ensureRuntimeSession(text || attachmentNames || 'Attachment', persistedOperation.operationId)
+        if (pendingStoredId.current && storedSessionId === 'new') {
+          persistedOperation = await outbox.rekey(
+            persistedOperation.operationId,
+            persistedOperation.revision,
+            pendingStoredId.current,
+            outboxOwnerId.current
           )
-          sid = created.session_id
-          runtimeId.current = sid
-          const durableStoredId = created.stored_session_id || sid
-          pendingStoredId.current = durableStoredId
-          persistedOperation = await outbox.rekey(persistedOperation.operationId, persistedOperation.revision, durableStoredId, outboxOwnerId.current)
         }
-        const fileRefs: string[] = []
-        let attachedCount = 0
-        for (const { attachment, dataUrl } of sendableAttachments) {
-          if (canceledAttachmentIds.current.has(attachment.id)) continue
-          if (attachment.file.type.startsWith('image/')) {
-            const attached = await gateway.request<{ attached?: boolean; message?: string }>('image.attach_bytes', {
-              content_base64: dataUrl.slice(dataUrl.indexOf(',') + 1),
-              filename: attachment.file.name,
-              session_id: sid
-            })
-            if (!attached.attached) throw new Error(attached.message || `Could not attach ${attachment.file.name}`)
-            attachedCount += 1
-          } else {
-            const attached = await gateway.request<{ attached?: boolean; message?: string; ref_text?: string }>(
-              'file.attach',
-              {
-                data_url: dataUrl,
-                name: attachment.file.name,
-                session_id: sid
-              }
-            )
-            if (!attached.attached || !attached.ref_text) {
-              throw new Error(attached.message || `Could not attach ${attachment.file.name}`)
-            }
-            fileRefs.push(attached.ref_text)
-            attachedCount += 1
+        const stageRefs = sendableAttachments.flatMap(attachment => attachment.stageRef ? [attachment.stageRef] : [])
+        if (stageRefs.length !== sendableAttachments.length) {
+          throw new Error('One or more attachments are not staged yet.')
+        }
+        let consumedItems: Array<{ attachment_id: string; kind: 'file' | 'image'; ref_text?: string }> = []
+        if (stageRefs.length) {
+          const consumed = await gateway.request<{
+            consumed?: Array<{ attachment_id: string; kind: 'file' | 'image'; ref_text?: string }>
+            message?: string
+          }>('attachment.consume', {
+            mobile_operation_id: persistedOperation.operationId,
+            profile: profile || 'default',
+            session_id: sid,
+            stage_refs: stageRefs
+          })
+          if (!Array.isArray(consumed.consumed) || consumed.consumed.length !== stageRefs.length) {
+            throw new Error(consumed.message || 'Hermes could not attach every staged file.')
           }
-          setAttachments(current => current.map(item => item.id === attachment.id
-            ? { ...item, status: 'staged' }
-            : item
-          ))
+          consumedItems = consumed.consumed
         }
-        if (!text && attachedCount === 0) {
-          await outbox.remove(persistedOperation.operationId, persistedOperation.revision, outboxOwnerId.current)
-          dropCanceledSubmission()
-          return
-        }
+        const fileRefs = consumedItems.flatMap(item => item.ref_text ? [item.ref_text] : [])
         const promptText = [...fileRefs, text].filter(Boolean).join('\n\n')
         requestDispatched = true
         await gateway.request('prompt.submit', { session_id: sid, text: promptText }, PROMPT_TIMEOUT_MS)
@@ -545,6 +592,7 @@ export function ChatScreen({
         setRecoveryOperations(current => current.filter(item => item.operationId !== persistedOperation.operationId))
         setReviewOperationId(null)
         setOutboxNotice(null)
+        draftOperationId.current = null
         setAttachments(current => {
           const completed = current.filter(attachment => pendingAttachments.some(pending => pending.id === attachment.id))
           completed.forEach(revokeAttachmentPreview)
@@ -590,7 +638,7 @@ export function ChatScreen({
         }))
       }
     },
-    [attachments, chat.busy, draft, expiredClarify, gateway, navigate, onSessionCreated, outbox, profile, ready, recoveryOperations, reviewOperationId, storedSessionId]
+    [attachments, chat.busy, draft, ensureRuntimeSession, expiredClarify, gateway, navigate, onSessionCreated, outbox, profile, ready, recoveryOperations, reviewOperationId, storedSessionId]
   )
 
   const selectAttachments = useCallback((files: FileList | File[]) => {
@@ -603,7 +651,7 @@ export function ChatScreen({
         setChat(current => ({ ...current, error: `${file.name} must be smaller than ${maxMb} MB.` }))
         continue
       }
-      const id = `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`
+      const id = crypto.randomUUID()
       accepted.push(createMobileAttachment(file, id))
     }
     if (accepted.length) {
@@ -617,21 +665,28 @@ export function ChatScreen({
     : getSpeechRecognitionConstructor(window as unknown as { SpeechRecognition?: SpeechRecognitionConstructor; webkitSpeechRecognition?: SpeechRecognitionConstructor })
 
   const removeAttachment = useCallback((id: string) => {
-    canceledAttachmentIds.current.delete(id)
+    canceledAttachmentIds.current.add(id)
     setAttachments(current => {
       const attachment = current.find(item => item.id === id)
-      if (attachment) revokeAttachmentPreview(attachment)
+      if (attachment) {
+        revokeAttachmentPreview(attachment)
+        const operationId = draftOperationId.current
+        if (attachment.stageRef && operationId) {
+          void gateway.request('attachment.discard', {
+            attachment_id: attachment.id,
+            mobile_operation_id: operationId,
+            profile: profile || 'default',
+            stage_ref: attachment.stageRef
+          })
+        }
+      }
       return current.filter(item => item.id !== id)
     })
-  }, [])
+  }, [gateway, profile])
 
   const cancelAttachment = useCallback((id: string) => {
-    canceledAttachmentIds.current.add(id)
-    setAttachments(current => current.map(attachment => attachment.id === id
-      ? { ...attachment, status: 'canceled' }
-      : attachment
-    ))
-  }, [])
+    removeAttachment(id)
+  }, [removeAttachment])
 
   const startVoiceDictation = useCallback(() => {
     if (!speechRecognitionConstructor) return
@@ -799,7 +854,7 @@ export function ChatScreen({
       )}
       <form className="mobile-composer" onSubmit={submit}>
         {!!attachments.length && (
-          <div className="mobile-attachment-list" aria-label="Selected attachments">
+          <div className="mobile-attachment-list" aria-label="Selected attachments" aria-live="polite">
             {attachments.map(attachment => (
               <div className="mobile-attachment-chip" key={attachment.id}>
                 {attachment.previewUrl ? <img alt={`Preview ${attachment.file.name}`} src={attachment.previewUrl} /> : <FileUp />}
@@ -807,12 +862,15 @@ export function ChatScreen({
                   <strong>{attachment.file.name}</strong>
                   <small>{attachment.status}{attachment.error ? `: ${attachment.error}` : ''}</small>
                 </span>
-                {attachment.status === 'reading' ? (
-                  <button aria-label={`Cancel ${attachment.file.name}`} onClick={() => cancelAttachment(attachment.id)} type="button"><X /></button>
-                ) : attachment.status === 'uploading' ? (
-                  <small className="mobile-attachment-lock">Finishing…</small>
+                {attachment.status === 'reading' || attachment.status === 'uploading' ? (
+                  <button aria-label={`Cancel ${attachment.file.name}`} disabled={chat.busy || submitInFlight.current} onClick={() => cancelAttachment(attachment.id)} type="button"><X /></button>
+                ) : attachment.status === 'failed' ? (
+                  <span className="mobile-attachment-actions">
+                    <button aria-label={`Retry ${attachment.file.name}`} disabled={chat.busy || submitInFlight.current} onClick={() => void stageAttachment(attachment)} type="button">Retry</button>
+                    <button aria-label={`Remove ${attachment.file.name}`} disabled={chat.busy || submitInFlight.current} onClick={() => removeAttachment(attachment.id)} type="button"><X /></button>
+                  </span>
                 ) : (
-                  <button aria-label={`Remove ${attachment.file.name}`} onClick={() => removeAttachment(attachment.id)} type="button"><X /></button>
+                  <button aria-label={`Remove ${attachment.file.name}`} disabled={chat.busy || submitInFlight.current} onClick={() => removeAttachment(attachment.id)} type="button"><X /></button>
                 )}
               </div>
             ))}
@@ -867,7 +925,7 @@ export function ChatScreen({
         <button
           aria-label={ready ? 'Send message' : 'Queue message'}
           className="mobile-send"
-          disabled={(!draft.trim() && !attachments.length) || composerBusy}
+          disabled={(!draft.trim() && !attachments.length) || composerBusy || (ready && attachments.some(attachment => attachment.status !== 'staged'))}
           type="submit"
         >
           <Send />

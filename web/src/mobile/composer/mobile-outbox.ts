@@ -26,7 +26,7 @@ export interface MobileOutboxStore {
   claim(operationId: string, expectedRevision: number, ownerId: string, leaseMs?: number): Promise<MobileOutboxOperation>
   close(): void
   complete(operationId: string, expectedRevision: number, ownerId: string): Promise<void>
-  createReady(input: Pick<MobileOutboxOperation, 'attachments' | 'profile' | 'storedSessionId' | 'text'>): Promise<MobileOutboxOperation>
+  createReady(input: Pick<MobileOutboxOperation, 'attachments' | 'profile' | 'storedSessionId' | 'text'>, requestedOperationId?: string): Promise<MobileOutboxOperation>
   destroy(): Promise<void>
   failClaim(operationId: string, expectedRevision: number, ownerId: string, state: 'READY' | 'AMBIGUOUS' | 'FAILED'): Promise<MobileOutboxOperation>
   list(profile: string, storedSessionId: string): Promise<MobileOutboxOperation[]>
@@ -189,9 +189,20 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
     return recoverable
   }
 
-  const createReady = async (input: Pick<MobileOutboxOperation, 'attachments' | 'profile' | 'storedSessionId' | 'text'>) => {
+  const createReady = async (
+    input: Pick<MobileOutboxOperation, 'attachments' | 'profile' | 'storedSessionId' | 'text'>,
+    requestedOperationId?: string
+  ) => {
     const now = Date.now()
-    const operation: MobileOutboxOperation = { ...input, createdAt: now, operationId: operationId(), revision: 1, state: 'READY', updatedAt: now, version: 1 }
+    const operation: MobileOutboxOperation = {
+      ...input,
+      createdAt: now,
+      operationId: requestedOperationId || operationId(),
+      revision: 1,
+      state: 'READY',
+      updatedAt: now,
+      version: 1
+    }
     validate(operation)
     if (byteSize(operation) > maxItemBytes) throw new MobileOutboxError('LIMIT_EXCEEDED', 'This message is too large to save for reload.')
     const db = await open()
@@ -201,6 +212,11 @@ export function createMobileOutbox(options: { limits?: { maxItemBytes?: number; 
     try {
       const existing = await request(store.getAll())
       existing.forEach(validate)
+      if (existing.some(item => item.operationId === operation.operationId)) {
+        tx.abort()
+        await done.catch(() => undefined)
+        throw new MobileOutboxError('CONFLICT', 'This saved message already exists. Review the existing copy.')
+      }
       if (existing.reduce((total, item) => total + byteSize(item), 0) + byteSize(operation) > maxTotalBytes) {
         tx.abort()
         await done.catch(() => undefined)

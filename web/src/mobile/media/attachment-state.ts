@@ -5,6 +5,7 @@ export interface MobileAttachment {
   file: File
   id: string
   previewUrl?: string
+  stageRef?: string
   status: MobileAttachmentStatus
 }
 

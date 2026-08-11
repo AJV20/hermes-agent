@@ -209,6 +209,20 @@ describe('MobileOutboxStore', () => {
     await expect(outbox.list('default', 'session-a')).rejects.toMatchObject({ code: 'CORRUPT' })
   })
 
+  it('preserves the operation UUID already used for eager attachment staging', async () => {
+    const outbox = store()
+    const requested = '123e4567-e89b-42d3-a456-426614174000'
+    const item = await outbox.createReady({
+      attachments: [], profile: 'default', storedSessionId: 'new', text: 'same operation'
+    }, requested)
+
+    expect(item.operationId).toBe(requested)
+    await expect(outbox.list('default', 'new')).resolves.toMatchObject([{ operationId: requested }])
+    await expect(outbox.createReady({
+      attachments: [], profile: 'default', storedSessionId: 'new', text: 'collision'
+    }, requested)).rejects.toMatchObject({ code: 'CONFLICT' })
+  })
+
   it('rejects impossible state transitions without changing the saved operation', async () => {
     const outbox = store()
     const item = await outbox.createReady({ attachments: [], profile: 'default', storedSessionId: 'session-a', text: 'safe state' })

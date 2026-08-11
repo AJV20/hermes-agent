@@ -19,6 +19,10 @@ describe('mobile viewport synchronization', () => {
     expect(measureMobileViewportHeight(844, 844, 168, 844, 383)).toBe(551)
   })
 
+  it('uses pageTop when installed iOS pans the document instead of visualViewport.offsetTop', () => {
+    expect(measureMobileViewportHeight(844, 844, 168, 844, 0, 383)).toBe(551)
+  })
+
   it('falls back to the document client height when innerHeight is unavailable', () => {
     expect(measureMobileViewportHeight(0, 780, undefined)).toBe(780)
   })
