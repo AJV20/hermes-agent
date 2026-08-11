@@ -1579,6 +1579,35 @@ describe('MobileApp', () => {
     expect(container.textContent).toContain('buffered command')
   })
 
+  it('buffers the destination session action while switching between resumed chats', async () => {
+    let finishSecondResume!: (value: { session_id: string }) => void
+    const secondResume = new Promise<{ session_id: string }>(resolve => { finishSecondResume = resolve })
+    gatewayMocks.request.mockImplementation((method: string, params?: { session_id?: string }) => {
+      if (method !== 'session.resume') return Promise.resolve({})
+      return params?.session_id === 'session-a'
+        ? Promise.resolve({ session_id: 'runtime-a' })
+        : secondResume
+    })
+    await renderAt('/mobile/chat/session-a')
+
+    await act(async () => {
+      ;(container.querySelector('[data-testid="switch-to-session-b"]') as HTMLAnchorElement).click()
+      await Promise.resolve()
+    })
+    await act(async () => gatewayMocks.eventHandler?.({
+      payload: { choices: ['once', 'deny'], command: 'destination command' },
+      session_id: 'runtime-b',
+      type: 'approval.request'
+    }))
+    await act(async () => {
+      finishSecondResume({ session_id: 'runtime-b' })
+      await secondResume
+    })
+
+    expect(container.querySelector('[aria-label="Command approval needed"]')).not.toBeNull()
+    expect(container.textContent).toContain('destination command')
+  })
+
   it('answers queued actions in the same FIFO order the backend resolves them', async () => {
     let finishFirstResponse!: () => void
     const firstResponse = new Promise<void>(resolve => { finishFirstResponse = resolve })
