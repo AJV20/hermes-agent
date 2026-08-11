@@ -25,6 +25,7 @@ export function useMobileViewportSync() {
     window.addEventListener('orientationchange', settle)
     window.addEventListener('pageshow', settle)
     window.visualViewport?.addEventListener('resize', sync)
+    window.visualViewport?.addEventListener('scroll', sync)
     document.addEventListener('visibilitychange', onVisibility)
 
     return () => {
@@ -32,6 +33,7 @@ export function useMobileViewportSync() {
       window.removeEventListener('orientationchange', settle)
       window.removeEventListener('pageshow', settle)
       window.visualViewport?.removeEventListener('resize', sync)
+      window.visualViewport?.removeEventListener('scroll', sync)
       document.removeEventListener('visibilitychange', onVisibility)
       frames.forEach((frame) => window.cancelAnimationFrame(frame))
       timers.forEach((timer) => window.clearTimeout(timer))
