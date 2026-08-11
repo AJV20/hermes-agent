@@ -41,12 +41,15 @@ def _(rid, params: dict) -> dict:
     # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
-    mobile_operation_id = str(params.get("mobile_operation_id") or "").strip()
-    if len(mobile_operation_id) > 128 or any(
-        character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-"
-        for character in mobile_operation_id
-    ):
-        mobile_operation_id = ""
+    raw_mobile_operation_id = str(params.get("mobile_operation_id") or "").strip().lower()
+    mobile_operation_id = raw_mobile_operation_id
+    if mobile_operation_id:
+        try:
+            parsed_operation_id = uuid.UUID(mobile_operation_id)
+            if parsed_operation_id.version != 4 or str(parsed_operation_id) != mobile_operation_id:
+                return _err(rid, 4002, "mobile_operation_id must be a canonical UUIDv4")
+        except (ValueError, AttributeError):
+            return _err(rid, 4002, "mobile_operation_id must be a canonical UUIDv4")
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into
@@ -74,6 +77,17 @@ def _(rid, params: dict) -> dict:
     if "fast" in params:
         create_service_tier_override = (
             "priority" if is_truthy_value(params.get("fast")) else ""
+        )
+
+    if mobile_operation_id:
+        from hermes_cli.mobile_session_operations import reserve_mobile_session
+
+        reservation_home = profile_home if profile_home is not None else _hermes_home
+        sid, key = reserve_mobile_session(
+            reservation_home,
+            mobile_operation_id,
+            session_id=sid,
+            stored_session_id=key,
         )
 
     ready = threading.Event()
