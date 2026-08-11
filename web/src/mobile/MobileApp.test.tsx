@@ -1415,6 +1415,34 @@ describe('MobileApp', () => {
     expect(container.querySelector('a[aria-label="Ask Hermes"]')).not.toBeNull()
   })
 
+  it('hides notifications from the previous profile while the next profile is loading', async () => {
+    let resolveMabel!: (value: { items: never[]; total: number }) => void
+    apiMocks.getMobileNotifications.mockImplementation(((requestedProfile: string) => {
+      if (requestedProfile === 'mabel') return new Promise(resolve => { resolveMabel = resolve })
+      return Promise.resolve({ items: [
+        { id: 'default-notice', level: 'error', read_at: null, title: 'Default profile only', body: 'Private default notice.', created_at: 1 } as never
+      ], total: 1 })
+    }) as never)
+
+    await act(async () => {
+      root.render(<MemoryRouter initialEntries={['/mobile']}><MobileAppHarness /></MemoryRouter>)
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(container.textContent).toContain('Default profile only'))
+
+    profileMocks.profile = 'mabel'
+    await act(async () => {
+      root.render(<MemoryRouter initialEntries={['/mobile']}><MobileAppHarness /></MemoryRouter>)
+      await Promise.resolve()
+    })
+
+    expect(container.textContent).not.toContain('Default profile only')
+    await act(async () => {
+      resolveMabel({ items: [], total: 0 })
+      await Promise.resolve()
+    })
+  })
+
   it('persists Home visibility, ordering, text size, and density in the selected profile', async () => {
     profileMocks.profile = 'mabel'
     await renderAt('/mobile/more')

@@ -30,7 +30,7 @@ export function MobileApp() {
   const [loadingMoreSessions, setLoadingMoreSessions] = useState(false)
   const [sessionsPageError, setSessionsPageError] = useState(false)
   const [cronJobs, setCronJobs] = useState<CronJob[]>([])
-  const [notifications, setNotifications] = useState<MobileNotification[]>([])
+  const [notificationsLoad, setNotificationsLoad] = useState<{ items: MobileNotification[]; scope: string }>({ items: [], scope: '' })
   const [preferences, setPreferences] = useState<MobilePreferences>(() => loadMobilePreferences('default'))
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [statusLoad, setStatusLoad] = useState<ScopedLoadState>({ phase: 'loading', scope: null })
@@ -46,9 +46,10 @@ export function MobileApp() {
   useEffect(() => {
     setPreferences(loadMobilePreferences(selectedProfile))
     let cancelled = false
+    const requestScope = selectedProfile
     void api.getMobileNotifications(profile).then(
-      value => { if (!cancelled) setNotifications(value.items) },
-      () => { if (!cancelled) setNotifications([]) }
+      value => { if (!cancelled) setNotificationsLoad({ items: value.items, scope: requestScope }) },
+      () => { if (!cancelled) setNotificationsLoad({ items: [], scope: requestScope }) }
     )
     return () => { cancelled = true }
   }, [profile, selectedProfile])
@@ -58,11 +59,14 @@ export function MobileApp() {
     setNotificationError(null)
     try {
       const updated = await api.markMobileNotificationRead(notification.id, profile)
-      setNotifications(current => current.map(item => item.id === updated.id ? updated : item))
+      setNotificationsLoad(current => current.scope === selectedProfile ? {
+        ...current,
+        items: current.items.map(item => item.id === updated.id ? updated : item)
+      } : current)
     } catch (error) {
       setNotificationError(error instanceof Error ? error.message : 'Could not mark the notification read.')
     }
-  }, [profile])
+  }, [profile, selectedProfile])
 
   useEffect(() => {
     sessionsScopeRef.current = sessionsScope
@@ -160,6 +164,7 @@ export function MobileApp() {
   const tasksPhase: LoadPhase = tasksLoad.scope === selectedProfile ? tasksLoad.phase : 'loading'
   const visibleStatus = statusLoad.scope === selectedProfile ? status : null
   const visibleSessions = sessionsLoad.scope === sessionsScope ? sessions : []
+  const visibleNotifications = notificationsLoad.scope === selectedProfile ? notificationsLoad.items : []
   const orderedCronJobs = useMemo(
     () => orderCronJobs(tasksLoad.scope === selectedProfile ? cronJobs : []),
     [cronJobs, selectedProfile, tasksLoad.scope]
@@ -192,7 +197,7 @@ export function MobileApp() {
         <HomeScreen
           cronJobs={orderedCronJobs}
           notificationError={notificationError}
-          notifications={notifications}
+          notifications={visibleNotifications}
           onMarkNotificationRead={notification => void markNotificationRead(notification)}
           preferences={preferences}
           profile={profile}
