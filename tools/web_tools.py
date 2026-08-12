@@ -850,6 +850,12 @@ async def web_extract_tool(
                 safe_urls.append(url)
                 safe_indices.append(index)
 
+        # Ensure bundled/user web providers are registered before capability
+        # selection: an explicit extract-only backend such as ``direct`` must
+        # not be displaced by a credentialed shared backend merely because the
+        # registry had not been hydrated yet.
+        _ensure_web_plugins_loaded()
+
         # Dispatch only safe URLs to the configured backend
         if not safe_urls:
             results = []
