@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import plistlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -261,6 +262,158 @@ class TestGeneratedSystemdUnits:
 
         assert "SoftResourceLimits" not in plist
 
+
+class TestWrapperBackedLaunchdCurrentness:
+    def _write_wrapper_backed_plist(self, tmp_path, monkeypatch, wrapper_text):
+        wrapper = tmp_path / "hermes-gateway-with-vw-secret"
+        wrapper.write_text(wrapper_text, encoding="utf-8")
+        wrapper.chmod(0o700)
+
+        plist = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        expected_args = plist["ProgramArguments"]
+        plist["Program"] = str(wrapper)
+        plist["ProgramArguments"] = [str(wrapper), *expected_args]
+
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_bytes(plistlib.dumps(plist))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        return plist_path, wrapper
+
+    def test_current_when_safe_wrapper_passes_generated_gateway_argv_unchanged(
+        self, tmp_path, monkeypatch
+    ):
+        self._write_wrapper_backed_plist(
+            tmp_path,
+            monkeypatch,
+            "#!/usr/bin/env python3\n"
+            "import os\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "RELEASE = Path('/Users/alice/.hermes/releases/reviewed')\n"
+            "os.environ['HERMES_SOURCE_ROOT'] = str(RELEASE)\n"
+            "os.environ['PYTHONPATH'] = str(RELEASE)\n"
+            "os.chdir(RELEASE)\n"
+            "argv = sys.argv[1:] or ['python', '-m', 'hermes_cli.main', 'gateway', 'run', '--replace']\n"
+            "os.execvpe(argv[0], argv, os.environ)\n",
+        )
+
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    @pytest.mark.parametrize(
+        ("wrapper_text", "mutate", "executable"),
+        [
+            (
+                "#!/usr/bin/env python3\n"
+                "import os\nimport sys\n"
+                "from pathlib import Path\n"
+                "RELEASE = Path('/Users/alice/.hermes/releases/reviewed')\n"
+                "os.environ['HERMES_SOURCE_ROOT'] = str(RELEASE)\n"
+                "os.environ['PYTHONPATH'] = str(RELEASE)\n"
+                "os.chdir(RELEASE)\n"
+                "argv = sys.argv[1:] or ['python', '-m', 'hermes_cli.main', 'gateway', 'run', '--replace']\n"
+                "argv.append('--debug')\n"
+                "os.execvpe(argv[0], argv, os.environ)\n",
+                lambda plist, wrapper: None,
+                True,
+            ),
+            (
+                "#!/usr/bin/env python3\n"
+                "import os\nimport sys\n"
+                "from pathlib import Path\n"
+                "RELEASE = Path('/Users/alice/.hermes/releases/reviewed')\n"
+                "os.environ['HERMES_HOME'] = '/other/profile'\n"
+                "os.environ['HERMES_SOURCE_ROOT'] = str(RELEASE)\n"
+                "os.environ['PYTHONPATH'] = str(RELEASE)\n"
+                "os.chdir(RELEASE)\n"
+                "argv = sys.argv[1:] or ['python', '-m', 'hermes_cli.main', 'gateway', 'run', '--replace']\n"
+                "os.execvpe(argv[0], argv, os.environ)\n",
+                lambda plist, wrapper: None,
+                True,
+            ),
+            (
+                "#!/usr/bin/env python3\n"
+                "import os\nimport sys\n"
+                "from pathlib import Path\n"
+                "RELEASE = Path('/Users/alice/.hermes/releases/reviewed')\n"
+                "os.environ['HERMES_SOURCE_ROOT'] = str(RELEASE)\n"
+                "os.environ['PYTHONPATH'] = str(RELEASE)\n"
+                "os.chdir(RELEASE)\n"
+                "argv = sys.argv[1:] or ['python', '-m', 'hermes_cli.main', 'gateway', 'run', '--replace']\n"
+                "os.execvpe(argv[0], argv, os.environ)\n",
+                lambda plist, wrapper: plist.__setitem__(
+                    "ProgramArguments", [str(wrapper), "/stale/python", *plist["ProgramArguments"][2:]]
+                ),
+                True,
+            ),
+            (
+                "#!/usr/bin/env python3\n"
+                "import os\nimport sys\n"
+                "from pathlib import Path\n"
+                "RELEASE = Path('/Users/alice/.hermes/releases/reviewed')\n"
+                "os.environ['HERMES_SOURCE_ROOT'] = str(RELEASE)\n"
+                "os.environ['PYTHONPATH'] = str(RELEASE)\n"
+                "os.chdir(RELEASE)\n"
+                "argv = sys.argv[1:] or ['python', '-m', 'hermes_cli.main', 'gateway', 'run', '--replace']\n"
+                "os.execvpe(argv[0], argv, os.environ)\n",
+                lambda plist, wrapper: plist.__setitem__(
+                    "ProgramArguments", [str(wrapper), *plist["ProgramArguments"][2:-1], "--wrong"]
+                ),
+                True,
+            ),
+            (
+                "#!/usr/bin/env python3\n"
+                "import os\nimport sys\n"
+                "from pathlib import Path\n"
+                "RELEASE = Path('/Users/alice/.hermes/releases/reviewed')\n"
+                "os.environ['HERMES_SOURCE_ROOT'] = str(RELEASE)\n"
+                "os.environ['PYTHONPATH'] = str(RELEASE)\n"
+                "os.chdir(RELEASE)\n"
+                "argv = sys.argv[1:] or ['python', '-m', 'hermes_cli.main', 'gateway', 'run', '--replace']\n"
+                "os.execvpe(argv[0], argv, os.environ)\n",
+                lambda plist, wrapper: None,
+                False,
+            ),
+        ],
+    )
+    def test_rejects_unsafe_or_drifted_wrapper_backed_plist(
+        self, tmp_path, monkeypatch, wrapper_text, mutate, executable
+    ):
+        plist_path, wrapper = self._write_wrapper_backed_plist(
+            tmp_path, monkeypatch, wrapper_text
+        )
+        plist = plistlib.loads(plist_path.read_bytes())
+        mutate(plist, wrapper)
+        plist_path.write_bytes(plistlib.dumps(plist))
+        if not executable:
+            wrapper.chmod(0o600)
+
+        assert gateway_cli.launchd_plist_is_current() is False
+
+    def test_status_labels_safe_wrapper_definition_as_current(self, tmp_path, monkeypatch, capsys):
+        self._write_wrapper_backed_plist(
+            tmp_path,
+            monkeypatch,
+            "#!/usr/bin/env python3\n"
+            "import os\nimport sys\n"
+            "from pathlib import Path\n"
+            "RELEASE = Path('/Users/alice/.hermes/releases/reviewed')\n"
+            "os.environ['HERMES_SOURCE_ROOT'] = str(RELEASE)\n"
+            "os.environ['PYTHONPATH'] = str(RELEASE)\n"
+            "os.chdir(RELEASE)\n"
+            "argv = sys.argv[1:] or ['python', '-m', 'hermes_cli.main', 'gateway', 'run', '--replace']\n"
+            "os.execvpe(argv[0], argv, os.environ)\n",
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr=""),
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda **kwargs: None)
+        monkeypatch.setattr(gateway_cli, "_launchd_unsupported_marker_exists", lambda: False)
+
+        gateway_cli.launchd_status()
+
+        assert "Wrapper-backed service definition is current" in capsys.readouterr().out
 
 
 class TestGatewayStopCleanup:

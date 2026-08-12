@@ -4,13 +4,17 @@ Gateway subcommand for hermes CLI.
 Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
+import ast
 import asyncio
 import json
 import logging
 import os
+import plistlib
+import re
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import textwrap
@@ -4208,17 +4212,247 @@ def generate_launchd_plist() -> str:
 """
 
 
-def launchd_plist_is_current() -> bool:
-    """Check if the installed launchd plist matches the currently generated one."""
-    plist_path = get_launchd_plist_path()
-    if not plist_path.exists():
+
+def _plist_environment(plist: dict) -> dict:
+    environment = plist.get("EnvironmentVariables")
+    return environment if isinstance(environment, dict) else {}
+
+
+def _normalize_launchd_plist_mapping(plist: dict) -> dict:
+    """Return a semantic plist mapping with shell-specific PATH removed."""
+    normalized = dict(plist)
+    environment = dict(_plist_environment(plist))
+    if environment:
+        environment["PATH"] = "__HERMES_PATH__"
+        normalized["EnvironmentVariables"] = environment
+    return normalized
+
+
+def _is_os_environ_subscript(node: ast.AST, key: str) -> bool:
+    return (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Attribute)
+        and isinstance(node.value.value, ast.Name)
+        and node.value.value.id == "os"
+        and node.value.attr == "environ"
+        and isinstance(node.slice, ast.Constant)
+        and node.slice.value == key
+    )
+
+
+def _is_os_environ_setdefault(node: ast.AST, key: str) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Attribute)
+        and isinstance(node.func.value.value, ast.Name)
+        and node.func.value.value.id == "os"
+        and node.func.value.attr == "environ"
+        and node.func.attr == "setdefault"
+        and bool(node.args)
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == key
+    )
+
+
+def _contains_name(node: ast.AST, name: str) -> bool:
+    return any(isinstance(child, ast.Name) and child.id == name for child in ast.walk(node))
+
+
+def _is_immutable_release_expression(node: ast.AST) -> bool:
+    """Recognize an explicit source root below the immutable releases store."""
+    return any(
+        isinstance(child, ast.Constant)
+        and isinstance(child.value, str)
+        and re.search(r"(?:^|/)\.hermes/releases/[A-Za-z0-9][A-Za-z0-9._-]*$", child.value)
+        for child in ast.walk(node)
+    )
+
+
+def _is_sys_argv_tail(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Attribute)
+        and isinstance(node.value.value, ast.Name)
+        and node.value.value.id == "sys"
+        and node.value.attr == "argv"
+        and isinstance(node.slice, ast.Slice)
+        and isinstance(node.slice.lower, ast.Constant)
+        and node.slice.lower.value == 1
+        and node.slice.upper is None
+        and node.slice.step is None
+    )
+
+
+def _is_exact_os_execvpe_handoff(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "os"
+        and node.func.attr == "execvpe"
+        and len(node.args) == 3
+        and isinstance(node.args[0], ast.Subscript)
+        and isinstance(node.args[0].value, ast.Name)
+        and node.args[0].value.id == "argv"
+        and isinstance(node.args[0].slice, ast.Constant)
+        and node.args[0].slice.value == 0
+        and isinstance(node.args[1], ast.Name)
+        and node.args[1].id == "argv"
+        and isinstance(node.args[2], ast.Attribute)
+        and isinstance(node.args[2].value, ast.Name)
+        and node.args[2].value.id == "os"
+        and node.args[2].attr == "environ"
+    )
+
+
+def _safe_wrapper_preserves_gateway_contract(wrapper: Path) -> bool:
+    """Return whether a locked-down Python wrapper preserves launchd's argv.
+
+    A wrapper is accepted only when it is a user-owned, non-symlink executable
+    that hands ``sys.argv[1:]`` straight to ``os.execvpe``; injects its source
+    root from ``~/.hermes/releases/<immutable-release>``; and does not replace
+    HERMES_HOME. This deliberately recognizes a narrow auditable pattern rather
+    than treating any executable wrapper as managed.
+    """
+    try:
+        metadata = wrapper.lstat()
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or not metadata.st_mode & stat.S_IXUSR
+            or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            return False
+        tree = ast.parse(wrapper.read_text(encoding="utf-8"), filename=str(wrapper))
+    except (OSError, SyntaxError, UnicodeDecodeError):
         return False
 
-    installed = plist_path.read_text(encoding="utf-8")
-    expected = generate_launchd_plist()
-    return _normalize_launchd_plist_for_comparison(
-        installed
-    ) == _normalize_launchd_plist_for_comparison(expected)
+    release_roots = {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        for target in (
+            node.targets if isinstance(node, ast.Assign) else [node.target]
+        )
+        if isinstance(target, ast.Name)
+        and node.value is not None
+        and _is_immutable_release_expression(node.value)
+    }
+    if not release_roots:
+        return False
+
+    source_root_names = {
+        value.args[0].id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if _is_os_environ_subscript(target, "HERMES_SOURCE_ROOT")
+        for value in [node.value]
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "str"
+            and len(value.args) == 1
+            and isinstance(value.args[0], ast.Name)
+        )
+    }
+    if not source_root_names or not source_root_names <= release_roots:
+        return False
+
+    source_root = next(iter(source_root_names))
+    if not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "os"
+        and node.func.attr == "chdir"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == source_root
+        for node in ast.walk(tree)
+    ):
+        return False
+    if not any(
+        isinstance(node, ast.Assign)
+        and any(_is_os_environ_subscript(target, "PYTHONPATH") for target in node.targets)
+        and _contains_name(node.value, source_root)
+        for node in ast.walk(tree)
+    ):
+        return False
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            _is_os_environ_subscript(target, "HERMES_HOME") for target in node.targets
+        ):
+            return False
+        if isinstance(node, ast.Call) and _is_os_environ_setdefault(node, "HERMES_HOME"):
+            continue
+
+    argv_assignments = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "argv" for target in node.targets)
+        and isinstance(node.value, ast.BoolOp)
+        and isinstance(node.value.op, ast.Or)
+        and len(node.value.values) == 2
+        and _is_sys_argv_tail(node.value.values[0])
+    ]
+    if len(argv_assignments) != 1 or not any(
+        _is_exact_os_execvpe_handoff(node) for node in ast.walk(tree)
+    ):
+        return False
+
+    # No unreviewed manipulation of the forwarded argv is allowed between the
+    # launchd entrypoint and exec.  The approved assignment and exec handoff are
+    # the only valid uses of the local name.
+    argv_uses = [node for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id == "argv"]
+    return len(argv_uses) == 3
+
+
+def _wrapper_backed_launchd_plist_is_current(installed: dict, expected: dict) -> bool:
+    program = installed.get("Program")
+    arguments = installed.get("ProgramArguments")
+    expected_arguments = expected.get("ProgramArguments")
+    if not (
+        isinstance(program, str)
+        and isinstance(arguments, list)
+        and isinstance(expected_arguments, list)
+        and arguments == [program, *expected_arguments]
+    ):
+        return False
+
+    wrapper = Path(program)
+    if not _safe_wrapper_preserves_gateway_contract(wrapper):
+        return False
+
+    comparable = dict(installed)
+    comparable.pop("Program", None)
+    comparable["ProgramArguments"] = expected_arguments
+    return _normalize_launchd_plist_mapping(comparable) == _normalize_launchd_plist_mapping(expected)
+
+
+def _launchd_plist_currentness() -> tuple[bool, bool]:
+    """Return ``(current, wrapper_backed)`` for the installed launchd plist."""
+    plist_path = get_launchd_plist_path()
+    try:
+        installed = plistlib.loads(plist_path.read_bytes())
+        expected = plistlib.loads(generate_launchd_plist().encode("utf-8"))
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return False, False
+
+    direct_current = _normalize_launchd_plist_mapping(installed) == _normalize_launchd_plist_mapping(expected)
+    if direct_current:
+        return True, False
+    wrapper_current = _wrapper_backed_launchd_plist_is_current(installed, expected)
+    return wrapper_current, wrapper_current
+
+
+def launchd_plist_is_current() -> bool:
+    """Check whether the installed plist is current, including safe wrappers."""
+    return _launchd_plist_currentness()[0]
 
 
 def refresh_launchd_plist_if_needed() -> bool:
@@ -4744,8 +4978,12 @@ def launchd_status(deep: bool = False):
 
     # ── Report ──
     print(f"Launchd plist: {plist_path}")
-    if launchd_plist_is_current():
-        print("✓ Service definition matches the current Hermes install")
+    plist_current, wrapper_backed = _launchd_plist_currentness()
+    if plist_current:
+        if wrapper_backed:
+            print("✓ Wrapper-backed service definition is current")
+        else:
+            print("✓ Service definition matches the current Hermes install")
     else:
         print("⚠ Service definition is stale relative to the current Hermes install")
         print("  Run: hermes gateway start")
