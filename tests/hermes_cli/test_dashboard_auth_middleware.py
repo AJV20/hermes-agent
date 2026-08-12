@@ -174,7 +174,15 @@ def test_gated_pwa_asset_is_served_without_auth(monkeypatch, tmp_path, path):
         f"{path} was not served through the auth gate: "
         f"{response.status_code} {response.text}"
     )
-    assert response.content == expected
+    if path == "/sw.js":
+        assert response.content.startswith(expected + b"\n// Hermes deploy revision: ")
+        revision = response.content.removeprefix(
+            expected + b"\n// Hermes deploy revision: "
+        ).strip()
+        assert len(revision) == 20
+        assert all(character in b"0123456789abcdef" for character in revision)
+    else:
+        assert response.content == expected
     assert "/login" not in response.headers.get("location", "")
 
 

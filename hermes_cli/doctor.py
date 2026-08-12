@@ -348,14 +348,6 @@ def _find_doctor_venv_entrypoint(
         if source_root is not None
         else os.environ.get("HERMES_SOURCE_ROOT", "")
     ).strip()
-    running_executable = Path(executable or sys.executable)
-    if resolved_source_root:
-        running_bins = [running_executable.parent, running_executable.resolve().parent]
-        for running_bin in dict.fromkeys(running_bins):
-            running_entrypoint = running_bin / "hermes"
-            if running_entrypoint.exists():
-                return running_entrypoint
-
     if not resolved_source_root:
         return None
     try:
@@ -364,9 +356,14 @@ def _find_doctor_venv_entrypoint(
     except OSError:
         return None
 
-    running_bin = Path(executable or sys.executable).parent
-    candidate = running_bin / "hermes"
-    return candidate if candidate.exists() else None
+    running_executable = Path(executable or sys.executable)
+    running_bins = [running_executable.parent, running_executable.resolve().parent]
+    for running_bin in dict.fromkeys(running_bins):
+        running_entrypoint = running_bin / "hermes"
+        if running_entrypoint.exists():
+            return running_entrypoint
+
+    return None
 
 
 def _resolved_auto_prune_enabled() -> bool:
