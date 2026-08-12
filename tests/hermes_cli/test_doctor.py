@@ -63,6 +63,40 @@ def test_doctor_uses_resolved_session_retention_config(monkeypatch):
     assert doctor._resolved_auto_prune_enabled() is True
 
 
+def test_large_state_db_with_active_retention_has_no_actionable_issue():
+    assert (
+        doctor._state_db_remediation(
+            "(retention is active (sessions.auto_prune enabled))",
+            auto_prune_enabled=True,
+        )
+        is None
+    )
+
+
+def test_large_state_db_without_retention_recommends_auto_prune():
+    assert doctor._state_db_remediation(
+        "(consider enabling sessions.auto_prune in config.yaml to bound growth)",
+        auto_prune_enabled=False,
+    ) == "state.db is large — enable sessions.auto_prune in config.yaml"
+
+
+def test_find_entrypoint_accepts_shared_venv_for_explicit_pinned_source_root(
+    tmp_path, monkeypatch
+):
+    release = tmp_path / "home" / ".hermes" / "releases" / "reviewed"
+    release.mkdir(parents=True)
+    shared_bin = tmp_path / "shared" / "venv" / "bin"
+    shared_bin.mkdir(parents=True)
+    hermes = shared_bin / "hermes"
+    hermes.write_text("#!/bin/sh\n")
+
+    assert doctor._find_doctor_venv_entrypoint(
+        release,
+        executable=shared_bin / "python",
+        source_root=str(release),
+    ) == hermes
+
+
 class TestDoctorToolAvailabilitySummary:
     def test_missing_api_key_summary_ignores_disabled_toolsets(self, monkeypatch):
         unavailable = [

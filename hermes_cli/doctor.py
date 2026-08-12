@@ -326,7 +326,10 @@ from hermes_cli.sizefmt import format_bytes as _human_bytes
 
 
 def _find_doctor_venv_entrypoint(
-    project_root: Path, *, executable: str | Path | None = None
+    project_root: Path,
+    *,
+    executable: str | Path | None = None,
+    source_root: str | None = None,
 ) -> Path | None:
     """Find the command entry point for a checkout or pinned shared runtime.
 
@@ -340,16 +343,28 @@ def _find_doctor_venv_entrypoint(
         if candidate.exists():
             return candidate
 
-    source_root = os.environ.get("HERMES_SOURCE_ROOT", "").strip()
-    if not source_root:
+    resolved_source_root = (
+        source_root
+        if source_root is not None
+        else os.environ.get("HERMES_SOURCE_ROOT", "")
+    ).strip()
+    running_executable = Path(executable or sys.executable)
+    if resolved_source_root:
+        running_bins = [running_executable.parent, running_executable.resolve().parent]
+        for running_bin in dict.fromkeys(running_bins):
+            running_entrypoint = running_bin / "hermes"
+            if running_entrypoint.exists():
+                return running_entrypoint
+
+    if not resolved_source_root:
         return None
     try:
-        if Path(source_root).resolve() != project_root.resolve():
+        if Path(resolved_source_root).resolve() != project_root.resolve():
             return None
     except OSError:
         return None
 
-    running_bin = Path(executable or sys.executable).resolve().parent
+    running_bin = Path(executable or sys.executable).parent
     candidate = running_bin / "hermes"
     return candidate if candidate.exists() else None
 
@@ -363,6 +378,21 @@ def _resolved_auto_prune_enabled() -> bool:
         return bool(sessions.get("auto_prune"))
     except Exception:
         return False
+
+
+def _state_db_remediation(
+    detail: str, *, auto_prune_enabled: bool
+) -> str | None:
+    """Return an actionable large-DB issue, or None when policy is active."""
+    if auto_prune_enabled:
+        return None
+    issue = "state.db is large — enable sessions.auto_prune in config.yaml"
+    if "optimize-storage" in detail:
+        issue += (
+            " and run 'hermes sessions optimize-storage' offline "
+            "(gateway stopped)"
+        )
+    return issue
 
 
 def _render_state_db_stats(
@@ -437,7 +467,9 @@ def _render_state_db_stats(
                 "(with the gateway stopped) to compact FTS storage"
             )
         lines.append((
-            "warn",
+            "info" if auto_prune_enabled and not (
+                stats.get("fts_rebuild_pending") or legacy_trigram
+            ) else "warn",
             f"state.db is large ({_human_bytes(logical)})",
             f"({detail})",
         ))
@@ -1848,16 +1880,12 @@ def run_doctor(args):
             ):
                 if _kind == "warn":
                     check_warn(_text, _detail)
-                    if "auto_prune" in _detail:
-                        issues.append(
-                            "state.db is large — enable sessions.auto_prune "
-                            "in config.yaml"
-                            + (
-                                " and run 'hermes sessions optimize-storage' "
-                                "offline (gateway stopped)"
-                                if "optimize-storage" in _detail else ""
-                            )
-                        )
+                    _remediation = _state_db_remediation(
+                        _detail,
+                        auto_prune_enabled=_auto_prune_enabled,
+                    )
+                    if _remediation:
+                        issues.append(_remediation)
                 else:
                     check_info(_text + (f" {_detail}" if _detail else ""))
         except Exception as _stats_exc:
@@ -1896,8 +1924,16 @@ def run_doctor(args):
     if sys.platform != "win32":
         _section("Command Installation")
         # Resolve an entry point from the source checkout, or (for a pinned
-        # immutable release) from the running shared canonical venv.
-        _venv_bin = _find_doctor_venv_entrypoint(PROJECT_ROOT)
+        # immutable release) from the running shared canonical venv. A staged
+        # release can be selected by the launch wrapper rather than inherited
+        # in Doctor's own environment, so the configured deployed source root
+        # is also accepted explicitly when available.
+        _configured_source_root = os.environ.get("HERMES_SOURCE_ROOT", "")
+        _venv_bin = _find_doctor_venv_entrypoint(
+            PROJECT_ROOT,
+            executable=sys.executable,
+            source_root=_configured_source_root,
+        )
 
         # Determine the expected command link directory (mirrors install.sh logic)
         _prefix = os.environ.get("PREFIX", "")
