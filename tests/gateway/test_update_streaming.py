@@ -148,7 +148,12 @@ class TestUpdateCommandGatewayFlag:
         with patch("gateway.run._hermes_home", hermes_home), \
              patch("gateway.run.__file__", fake_file), \
              patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
-             patch("subprocess.Popen", mock_popen):
+             patch("subprocess.Popen", mock_popen), \
+             patch.dict(os.environ, {
+                 "PYTHONPATH": "/tmp/detached-release",
+                 "PYTHONHOME": "/tmp/custom-python",
+                 "HERMES_SOURCE_ROOT": "/tmp/detached-release",
+             }):
             result = await runner._handle_update_command(event)
 
         # Check the bash command string contains --gateway and PYTHONUNBUFFERED
@@ -158,6 +163,10 @@ class TestUpdateCommandGatewayFlag:
         assert "PYTHONUNBUFFERED" in cmd_string
         assert "rc=$?" in cmd_string
         assert "status=$?" not in cmd_string
+        update_env = mock_popen.call_args.kwargs["env"]
+        assert "PYTHONPATH" not in update_env
+        assert "PYTHONHOME" not in update_env
+        assert "HERMES_SOURCE_ROOT" not in update_env
         assert "stream progress" in result
 
 

@@ -1037,3 +1037,108 @@ def test_desktop_lifespan_terminates_managed_gateway_restart(monkeypatch):
         pass
 
     assert calls == ["terminate"]
+
+
+def test_spawn_update_action_scrubs_deployed_source_overrides(monkeypatch, tmp_path):
+    """Dashboard updates must use the canonical mutable checkout.
+
+    A custom dashboard can import from a detached release through source-root
+    environment overrides.  Those overrides must not reach ``hermes update``
+    or the child imports the updater from the detached linked worktree.
+    """
+    import hermes_cli.web_server as ws
+
+    monkeypatch.setenv("PYTHONPATH", "/tmp/detached-release")
+    monkeypatch.setenv("PYTHONHOME", "/tmp/custom-python")
+    monkeypatch.setenv("HERMES_SOURCE_ROOT", "/tmp/detached-release")
+    monkeypatch.setattr(ws, "_ACTION_LOG_DIR", tmp_path)
+    canonical_root = ws.get_hermes_home() / "hermes-agent"
+    canonical_root.mkdir(parents=True)
+    (canonical_root / ".git").mkdir()
+
+    captured = {}
+
+    class _FakeProc:
+        pid = 1234
+
+    def _fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        captured["cwd"] = kwargs.get("cwd")
+        return _FakeProc()
+
+    monkeypatch.setattr(ws.subprocess, "Popen", _fake_popen)
+
+    ws._spawn_hermes_action(["update"], "hermes-update")
+
+    assert "PYTHONPATH" not in captured["env"]
+    assert "PYTHONHOME" not in captured["env"]
+    assert "HERMES_SOURCE_ROOT" not in captured["env"]
+    assert captured["cwd"] == str(ws.get_hermes_home() / "hermes-agent")
+
+
+def test_recent_update_commits_use_canonical_checkout_for_deployed_release(monkeypatch, tmp_path):
+    """The update changelog must describe the same checkout as its count."""
+    import hermes_cli.web_server as ws
+
+    canonical_root = ws.get_hermes_home() / "hermes-agent"
+    canonical_root.mkdir(parents=True)
+    (canonical_root / ".git").mkdir()
+    deployed = ws.get_hermes_home() / "releases" / "custom-release"
+    deployed.mkdir(parents=True)
+    (deployed / ".git").write_text("gitdir: /tmp/worktrees/custom-release\n")
+    monkeypatch.setattr(ws, "PROJECT_ROOT", deployed)
+
+    captured = {}
+
+    class _Result:
+        returncode = 0
+        stdout = ""
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _Result()
+
+    monkeypatch.setattr(ws.subprocess, "run", _fake_run)
+
+    assert ws._recent_upstream_commits() == []
+    assert captured["cmd"][2] == str(canonical_root)
+
+
+def test_update_endpoint_uses_canonical_checkout_from_deployed_release(monkeypatch, tmp_path):
+    """Exercise the actual update button endpoint through its spawned child."""
+    import hermes_cli.web_server as ws
+
+    canonical_root = ws.get_hermes_home() / "hermes-agent"
+    canonical_root.mkdir(parents=True)
+    (canonical_root / ".git").mkdir()
+    deployed = ws.get_hermes_home() / "releases" / "custom-release"
+    deployed.mkdir(parents=True)
+    monkeypatch.setattr(ws, "PROJECT_ROOT", deployed)
+    monkeypatch.setenv("PYTHONPATH", str(deployed))
+    monkeypatch.setenv("PYTHONHOME", "/tmp/custom-python")
+    monkeypatch.setenv("HERMES_SOURCE_ROOT", str(deployed))
+    monkeypatch.setattr(ws, "_ACTION_LOG_DIR", tmp_path)
+    monkeypatch.setattr(ws, "_ACTION_PROCS", {})
+
+    captured = {}
+
+    class _FakeProc:
+        pid = 1234
+
+    def _fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        captured["cwd"] = kwargs.get("cwd")
+        return _FakeProc()
+
+    monkeypatch.setattr(ws.subprocess, "Popen", _fake_popen)
+
+    client, _ = _client()
+    response = client.post("/api/hermes/update")
+
+    assert response.status_code == 200
+    assert captured["cmd"][-1] == "update"
+    assert captured["cwd"] == str(canonical_root)
+    assert "PYTHONPATH" not in captured["env"]
+    assert "PYTHONHOME" not in captured["env"]
+    assert "HERMES_SOURCE_ROOT" not in captured["env"]

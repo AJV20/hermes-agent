@@ -3988,9 +3988,21 @@ def _spawn_hermes_action(
     # drops it (gateway/run.py); mirror that here (#52470).
     action_env = {**os.environ, "HERMES_NONINTERACTIVE": "1"}
     action_env.pop("_HERMES_GATEWAY", None)
+    action_cwd = PROJECT_ROOT
+    if name == "hermes-update":
+        # A branded/custom dashboard may deliberately import UI/backend code
+        # from an immutable detached release while its mutable installation is
+        # HERMES_HOME/hermes-agent. The updater must run from that canonical
+        # checkout, not inherit overrides that retarget Python imports back to
+        # the detached linked worktree.
+        for source_override in ("PYTHONPATH", "PYTHONHOME", "HERMES_SOURCE_ROOT"):
+            action_env.pop(source_override, None)
+        canonical_root = get_hermes_home() / "hermes-agent"
+        if (canonical_root / ".git").exists():
+            action_cwd = canonical_root
 
     popen_kwargs: Dict[str, Any] = {
-        "cwd": str(PROJECT_ROOT),
+        "cwd": str(action_cwd),
         "stdin": subprocess.DEVNULL,
         "stdout": log_file,
         "stderr": subprocess.STDOUT,
@@ -4362,11 +4374,20 @@ def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
     or git is unavailable. Never raises into the request path.
     """
     try:
+        commit_root = PROJECT_ROOT
+        canonical_root = get_hermes_home() / "hermes-agent"
+        releases_root = (get_hermes_home() / "releases").resolve()
+        try:
+            project_is_deployed_release = PROJECT_ROOT.resolve().is_relative_to(releases_root)
+        except (OSError, ValueError):
+            project_is_deployed_release = False
+        if project_is_deployed_release and (canonical_root / ".git").exists():
+            commit_root = canonical_root
         out = subprocess.run(
             [
                 "git",
                 "-C",
-                str(PROJECT_ROOT),
+                str(commit_root),
                 "log",
                 "--format=%H%x1f%s%x1f%an%x1f%ct",
                 "HEAD..origin/main",
