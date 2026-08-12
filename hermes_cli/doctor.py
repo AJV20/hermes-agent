@@ -325,7 +325,49 @@ STATE_DB_SIZE_WARN_BYTES = 1 * 1024 * 1024 * 1024   # 1 GiB logical size
 from hermes_cli.sizefmt import format_bytes as _human_bytes
 
 
-def _render_state_db_stats(stats: dict, holders=None) -> list:
+def _find_doctor_venv_entrypoint(
+    project_root: Path, *, executable: str | Path | None = None
+) -> Path | None:
+    """Find the command entry point for a checkout or pinned shared runtime.
+
+    A pinned release may expose an immutable source tree through
+    ``HERMES_SOURCE_ROOT`` while executing from the canonical shared venv.
+    In that layout the running interpreter's sibling ``hermes`` console script
+    is authoritative; requiring ``<release>/venv`` would be a false repair.
+    """
+    for venv_name in ("venv", ".venv"):
+        candidate = project_root / venv_name / "bin" / "hermes"
+        if candidate.exists():
+            return candidate
+
+    source_root = os.environ.get("HERMES_SOURCE_ROOT", "").strip()
+    if not source_root:
+        return None
+    try:
+        if Path(source_root).resolve() != project_root.resolve():
+            return None
+    except OSError:
+        return None
+
+    running_bin = Path(executable or sys.executable).resolve().parent
+    candidate = running_bin / "hermes"
+    return candidate if candidate.exists() else None
+
+
+def _resolved_auto_prune_enabled() -> bool:
+    """Return whether resolved session retention is enabled for this profile."""
+    try:
+        from hermes_cli.config import load_config
+
+        sessions = (load_config() or {}).get("sessions") or {}
+        return bool(sessions.get("auto_prune"))
+    except Exception:
+        return False
+
+
+def _render_state_db_stats(
+    stats: dict, holders=None, *, auto_prune_enabled: bool = False
+) -> list:
     """Turn a collect_state_db_stats() dict into doctor output lines.
 
     Returns a list of ``(kind, text, detail)`` tuples where kind is one of
@@ -372,15 +414,18 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
             "",
         ))
 
-    # Advisory: oversized database. Suggest auto_prune, and — when the v23
-    # FTS rebuild is pending OR the DB still carries the legacy inline
-    # trigram layout (fts_storage_version marker absent) — the offline
-    # optimize-storage pass that migrates/compacts the FTS indexes.
+    # Advisory: oversized database. Resolved retention remains informative —
+    # its presence should never create a false actionable issue. When pruning
+    # is disabled, retain the remediation that tells users how to bound growth.
+    # Pending/legacy FTS maintenance is independent and remains actionable.
     if logical is not None and logical > STATE_DB_SIZE_WARN_BYTES:
-        detail = (
-            "consider enabling sessions.auto_prune in config.yaml "
-            "to bound growth"
-        )
+        if auto_prune_enabled:
+            detail = "retention is active (sessions.auto_prune enabled)"
+        else:
+            detail = (
+                "consider enabling sessions.auto_prune in config.yaml "
+                "to bound growth"
+            )
         legacy_trigram = (
             fts is not None
             and fts.get("messages_fts_trigram")
@@ -1795,8 +1840,11 @@ def run_doctor(args):
 
             _db_stats = collect_state_db_stats(state_db_path)
             _db_holders = count_db_holders(state_db_path)
+            _auto_prune_enabled = _resolved_auto_prune_enabled()
             for _kind, _text, _detail in _render_state_db_stats(
-                _db_stats, holders=_db_holders
+                _db_stats,
+                holders=_db_holders,
+                auto_prune_enabled=_auto_prune_enabled,
             ):
                 if _kind == "warn":
                     check_warn(_text, _detail)
@@ -1847,13 +1895,9 @@ def run_doctor(args):
 
     if sys.platform != "win32":
         _section("Command Installation")
-        # Determine the venv entry point location
-        _venv_bin = None
-        for _venv_name in ("venv", ".venv"):
-            _candidate = PROJECT_ROOT / _venv_name / "bin" / "hermes"
-            if _candidate.exists():
-                _venv_bin = _candidate
-                break
+        # Resolve an entry point from the source checkout, or (for a pinned
+        # immutable release) from the running shared canonical venv.
+        _venv_bin = _find_doctor_venv_entrypoint(PROJECT_ROOT)
 
         # Determine the expected command link directory (mirrors install.sh logic)
         _prefix = os.environ.get("PREFIX", "")
@@ -1875,7 +1919,11 @@ def run_doctor(args):
                 f"Reinstall entry point: cd {PROJECT_ROOT} && source venv/bin/activate && pip install -e '.[all]'"
             )
         else:
-            check_ok(f"Venv entry point exists ({_venv_bin.relative_to(PROJECT_ROOT)})")
+            try:
+                _venv_display = _venv_bin.relative_to(PROJECT_ROOT)
+            except ValueError:
+                _venv_display = _venv_bin
+            check_ok(f"Venv entry point exists ({_venv_display})")
 
             # Check the symlink at the command link location
             if _cmd_link.is_symlink():

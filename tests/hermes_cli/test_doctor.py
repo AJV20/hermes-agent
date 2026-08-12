@@ -51,6 +51,18 @@ class TestProviderEnvDetection:
         assert not _has_provider_env_config(content)
 
 
+def test_doctor_uses_resolved_session_retention_config(monkeypatch):
+    from hermes_cli import config
+
+    monkeypatch.setattr(
+        config,
+        "load_config",
+        lambda: {"sessions": {"auto_prune": True}},
+    )
+
+    assert doctor._resolved_auto_prune_enabled() is True
+
+
 class TestDoctorToolAvailabilitySummary:
     def test_missing_api_key_summary_ignores_disabled_toolsets(self, monkeypatch):
         unavailable = [

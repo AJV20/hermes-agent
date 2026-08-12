@@ -184,6 +184,41 @@ class TestConfiguredOnlySelection:
             lambda timeout: (True, "about:blank ok"))
         results = {r.name: r for r in run_live_checks([])}
         assert results["Browser"].status == "pass"
+    def test_browser_availability_follows_runtime_resolver(self, monkeypatch):
+        monkeypatch.setattr(
+            doctor_live,
+            "_resolve_browser_command",
+            lambda: ["/managed/node/bin/agent-browser"],
+        )
+
+        assert doctor_live._resolve_browser_command() == [
+            "/managed/node/bin/agent-browser"
+        ]
+
+    def test_browser_live_probe_uses_resolved_agent_browser_not_python_playwright(
+        self, monkeypatch
+    ):
+        calls = []
+        monkeypatch.setattr(
+            doctor_live,
+            "_resolve_browser_command",
+            lambda: ["/managed/node/bin/agent-browser"],
+        )
+        monkeypatch.setattr(doctor_live, "_browser_subprocess_env", lambda: {"PATH": "/managed/node/bin"})
+        monkeypatch.setattr(
+            doctor_live.subprocess,
+            "run",
+            lambda cmd, **kwargs: calls.append((cmd, kwargs))
+            or SimpleNamespace(returncode=0, stderr=""),
+        )
+
+        ok, detail = doctor_live._launch_browser_probe(3)
+
+        assert ok is True
+        assert "agent-browser" in detail
+        assert len(calls) == 2
+        assert all(call[0][0] == "/managed/node/bin/agent-browser" for call in calls)
+        assert all("playwright" not in " ".join(call[0]).lower() for call in calls)
 
 
 class TestFailureIsolation:

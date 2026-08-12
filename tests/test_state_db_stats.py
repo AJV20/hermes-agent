@@ -184,6 +184,21 @@ def test_render_warns_on_large_db():
     assert "config.yaml" in blob
 
 
+def test_render_large_db_with_resolved_retention_never_suggests_enabling_prune():
+    from hermes_cli.doctor import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
+
+    lines = _render_state_db_stats(
+        _base_stats(logical_size_bytes=STATE_DB_SIZE_WARN_BYTES + 1),
+        holders=None,
+        auto_prune_enabled=True,
+    )
+
+    blob = " ".join(" ".join(str(p) for p in line) for line in lines)
+    assert "state.db is large" in blob
+    assert "retention is active" in blob
+    assert "consider enabling sessions.auto_prune" not in blob
+
+
 def test_render_large_db_with_pending_rebuild_suggests_optimize():
     from hermes_cli.doctor import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
 

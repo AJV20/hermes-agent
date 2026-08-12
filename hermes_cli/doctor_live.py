@@ -19,6 +19,9 @@ Design invariants:
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+import uuid
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
@@ -94,26 +97,67 @@ def _browser_available() -> bool:
     return False
 
 
-def _launch_browser_probe(timeout: float) -> tuple:
-    """Launch a browser, open about:blank, close. Returns (ok, detail).
-
-    Uses Playwright directly (what agent-browser drives underneath) so the
-    probe owns the full lifecycle and always cleans up.
-    """
+def _resolve_browser_command() -> list[str] | None:
+    """Resolve the same runnable agent-browser executable used by local tools."""
     try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        return (False, "playwright not installed")
+        from tools.browser_tool import _find_agent_browser
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True,
-                                    timeout=timeout * 1000)
-        try:
-            page = browser.new_page()
-            page.goto("about:blank", timeout=timeout * 1000)
-        finally:
-            browser.close()
-    return (True, "launched + about:blank + closed")
+        command = _find_agent_browser()
+    except Exception:
+        return None
+    if command == "npx agent-browser":
+        return [shutil.which("npx") or "npx", "agent-browser"]
+    return [command]
+
+
+def _browser_subprocess_env() -> dict[str, str]:
+    """Build the browser tool's configured Node environment for a probe."""
+    try:
+        from tools.browser_tool import _build_browser_env, _merge_browser_path
+
+        env = _build_browser_env()
+        env["PATH"] = _merge_browser_path(env.get("PATH", ""))
+        return env
+    except Exception:
+        return dict(os.environ)
+
+
+def _launch_browser_probe(timeout: float) -> tuple:
+    """Use the configured agent-browser to open and close a blank browser.
+
+    The runtime browser path is Node agent-browser, not Python Playwright. This
+    deliberately shares browser_tool's resolver and environment so `doctor
+    --live` checks the executable Chromium path that Hermes actually uses.
+    """
+    command = _resolve_browser_command()
+    if not command:
+        return (False, "agent-browser command could not be resolved")
+    session = f"hermes-doctor-{uuid.uuid4().hex[:8]}"
+    env = _browser_subprocess_env()
+    try:
+        opened = subprocess.run(
+            [*command, "--session", session, "--json", "open", "about:blank"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+        if opened.returncode != 0:
+            detail = (opened.stderr or opened.stdout or "agent-browser open failed").strip()
+            return (False, detail)
+        closed = subprocess.run(
+            [*command, "--session", session, "--json", "close"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+        if closed.returncode != 0:
+            detail = (closed.stderr or closed.stdout or "agent-browser close failed").strip()
+            return (False, detail)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return (False, str(exc) or exc.__class__.__name__)
+    return (True, "agent-browser opened + closed about:blank")
 
 
 def _probe_mcp_server(name: str, config: dict, timeout: float):

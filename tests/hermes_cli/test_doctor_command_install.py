@@ -133,6 +133,26 @@ class TestDoctorCommandInstallation:
 
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    def test_uses_shared_running_venv_for_pinned_source_release(
+        self, monkeypatch, tmp_path
+    ):
+        source = tmp_path / "releases" / "hermes-pinned"
+        source.mkdir(parents=True)
+        shared_bin = tmp_path / "canonical" / "venv" / "bin"
+        shared_bin.mkdir(parents=True)
+        executable = shared_bin / "python"
+        executable.write_text("", encoding="utf-8")
+        entrypoint = shared_bin / "hermes"
+        entrypoint.write_text("#!/bin/sh\n", encoding="utf-8")
+        entrypoint.chmod(0o755)
+        monkeypatch.setenv("HERMES_SOURCE_ROOT", str(source))
+
+        assert doctor_mod._find_doctor_venv_entrypoint(
+            source, executable=executable
+        ) == entrypoint
+
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
     def test_termux_uses_prefix_bin(self, monkeypatch, tmp_path):
         """On Termux, the command link dir is $PREFIX/bin."""
         prefix_dir = tmp_path / "termux_prefix"
