@@ -33,6 +33,28 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     mock_run.assert_not_called()
 
 
+def test_check_for_updates_prefers_canonical_checkout_for_deployed_release(tmp_path, monkeypatch):
+    """A deployed source override must not inflate the update count."""
+    import hermes_cli.banner as banner
+
+    canonical = tmp_path / "hermes-agent"
+    canonical.mkdir()
+    (canonical / ".git").mkdir()
+    deployed = tmp_path / "releases" / "custom-release"
+    deployed.mkdir(parents=True)
+    (deployed / ".git").write_text("gitdir: /tmp/worktrees/custom-release\n")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SOURCE_ROOT", str(deployed))
+    monkeypatch.setattr(banner, "__file__", str(deployed / "hermes_cli" / "banner.py"))
+    monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda *_: "git")
+    seen = []
+    monkeypatch.setattr(banner, "_check_via_local_git", lambda repo: seen.append(repo) or 4)
+
+    assert banner.check_for_updates() == 4
+    assert seen == [canonical]
+
+
 
 
 

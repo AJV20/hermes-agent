@@ -320,12 +320,25 @@ def check_for_updates() -> Optional[int]:
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
-        # Prefer the running code's location over the profile-scoped path.
-        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
-        # Path(__file__) always resolves to the actual installed checkout.
-        repo_dir = Path(__file__).parent.parent.resolve()
+        # A branded/custom runtime may import from an immutable release under
+        # HERMES_HOME/releases while updates are deliberately applied to the
+        # canonical mutable checkout.  Keep the displayed behind-count aligned
+        # with that updater target instead of comparing the detached release's
+        # feature history to origin/main.
+        canonical_repo = hermes_home / "hermes-agent"
+        running_repo = Path(__file__).parent.parent.resolve()
+        releases_root = (hermes_home / "releases").resolve()
+        try:
+            running_is_deployed_release = running_repo.is_relative_to(releases_root)
+        except (OSError, ValueError):
+            running_is_deployed_release = False
+        repo_dir = (
+            canonical_repo
+            if running_is_deployed_release and (canonical_repo / ".git").exists()
+            else running_repo
+        )
         if not (repo_dir / ".git").exists():
-            repo_dir = hermes_home / "hermes-agent"
+            repo_dir = canonical_repo
         if not (repo_dir / ".git").exists():
             # No git checkout and no embedded revision — can't determine
             # update status. This is the Docker path (already short-circuited

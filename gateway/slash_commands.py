@@ -5637,6 +5637,15 @@ class GatewaySlashCommandsMixin:
         # we're already inside gateway/run.py's update path which is async,
         # so the simplest correct thing is: launch an inline Python helper
         # that runs the command and writes both outputs.
+        # The gateway may intentionally run from an immutable/custom release via
+        # PYTHONPATH + HERMES_SOURCE_ROOT while the `hermes` shim resolves to the
+        # canonical mutable checkout.  Do not leak those source overrides into
+        # the updater: Python would import update_cmd from the detached release,
+        # which then tries to check out `main` in the wrong linked worktree.
+        update_env = os.environ.copy()
+        for source_override in ("PYTHONPATH", "PYTHONHOME", "HERMES_SOURCE_ROOT"):
+            update_env.pop(source_override, None)
+
         try:
             if sys.platform == "win32":
                 import textwrap
@@ -5667,6 +5676,7 @@ class GatewaySlashCommandsMixin:
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    env=update_env,
                     **windows_detach_popen_kwargs(),
                 )
             else:
@@ -5687,6 +5697,7 @@ class GatewaySlashCommandsMixin:
                         [setsid_bin, "bash", "-c", update_cmd],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        env=update_env,
                         start_new_session=True,
                     )
                 else:
@@ -5695,6 +5706,7 @@ class GatewaySlashCommandsMixin:
                         ["bash", "-c", update_cmd],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        env=update_env,
                         start_new_session=True,
                     )
         except Exception as e:
