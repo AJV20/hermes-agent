@@ -61,8 +61,13 @@ export function syncMobileViewportHeight(
     viewportWindow.visualViewport?.offsetTop,
     viewportWindow.visualViewport?.pageTop,
   )
+  const pageTop = viewportWindow.visualViewport?.pageTop
+  const viewportTop = Math.max(0,
+    Number.isFinite(pageTop) ? pageTop! : viewportWindow.visualViewport?.offsetTop ?? 0,
+  )
   if (height > 0) {
     viewportDocument.documentElement.style.setProperty('--mobile-app-height', `${height}px`)
+    viewportDocument.documentElement.style.setProperty('--mvt', `${viewportTop}px`)
   }
   return height
 }

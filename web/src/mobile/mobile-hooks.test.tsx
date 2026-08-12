@@ -13,6 +13,7 @@ function ViewportHarness() {
 describe('useMobileViewportSync', () => {
   const originalViewport = Object.getOwnPropertyDescriptor(window, 'visualViewport')
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, 'innerHeight')
+  const originalScrollY = Object.getOwnPropertyDescriptor(window, 'scrollY')
   const roots: Array<ReturnType<typeof createRoot>> = []
   const containers: HTMLElement[] = []
 
@@ -22,7 +23,10 @@ describe('useMobileViewportSync', () => {
     if (originalViewport) Object.defineProperty(window, 'visualViewport', originalViewport)
     else delete (window as unknown as { visualViewport?: VisualViewport }).visualViewport
     if (originalInnerHeight) Object.defineProperty(window, 'innerHeight', originalInnerHeight)
+    if (originalScrollY) Object.defineProperty(window, 'scrollY', originalScrollY)
+    else delete (window as unknown as { scrollY?: number }).scrollY
     document.documentElement.style.removeProperty('--mobile-app-height')
+    document.documentElement.style.removeProperty('--mvt')
   })
 
   it('remeasures when iOS pans the visual viewport without resizing it', () => {
@@ -42,6 +46,23 @@ describe('useMobileViewportSync', () => {
     act(() => visualViewport.dispatchEvent(new Event('scroll')))
 
     expect(document.documentElement.style.getPropertyValue('--mobile-app-height')).toBe('551px')
+  })
+
+  it('keeps the chat shell aligned with an iOS document pan instead of double-counting it', () => {
+    const visualViewport = Object.assign(new EventTarget(), { height: 168, offsetTop: 0, pageTop: 383 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 })
+    Object.defineProperty(window, 'scrollY', { configurable: true, value: 383 })
+    Object.defineProperty(window, 'visualViewport', { configurable: true, value: visualViewport })
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    containers.push(container)
+    const root = createRoot(container)
+    roots.push(root)
+
+    act(() => root.render(<ViewportHarness />))
+
+    expect(document.documentElement.style.getPropertyValue('--mobile-app-height')).toBe('551px')
+    expect(document.documentElement.style.getPropertyValue('--mvt')).toBe('383px')
   })
 
   it('remeasures when installed iOS pans the document without changing visualViewport.offsetTop', () => {

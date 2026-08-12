@@ -70,8 +70,20 @@ describe('PushSettingsScreen', () => {
     expect(checkboxes[3].checked).toBe(true)
   })
 
+  it('repairs a browser subscription missing from the server on authenticated foreground load', async () => {
+    apiMocks.getMobilePushSubscription.mockResolvedValue({ subscription: null })
+    pushMocks.refreshMobilePush.mockResolvedValue(true)
+
+    await render('default')
+    await act(async () => { await vi.waitFor(() => expect(pushMocks.refreshMobilePush).toHaveBeenCalled()) })
+
+    expect(pushMocks.refreshMobilePush).toHaveBeenCalledWith('default', ['success', 'warning', 'error'])
+    expect(container.textContent).toContain('Notifications are enabled on this device')
+  })
+
   it('enables successful response alerts by default on a new device', async () => {
     apiMocks.getMobilePushSubscription.mockResolvedValue({ subscription: null })
+    pushMocks.refreshMobilePush.mockResolvedValue(false)
     await render('default')
 
     const checkboxes = [...container.querySelectorAll('input[type="checkbox"]')] as HTMLInputElement[]
@@ -85,6 +97,23 @@ describe('PushSettingsScreen', () => {
       'B'.repeat(87),
       expect.arrayContaining(['success', 'warning', 'error'])
     )
+  })
+
+  it('ignores a stale subscription repair from the previous profile', async () => {
+    let resolveOld!: (value: boolean) => void
+    const oldRefresh = new Promise<boolean>(resolve => { resolveOld = resolve })
+    pushMocks.refreshMobilePush.mockImplementation((requestedProfile: string) => (
+      requestedProfile === 'old' ? oldRefresh : Promise.resolve(false)
+    ))
+
+    await render('old')
+    await act(async () => { await vi.waitFor(() => expect(pushMocks.refreshMobilePush).toHaveBeenCalledWith('old', expect.any(Array))) })
+    await render('new')
+    await act(async () => { await vi.waitFor(() => expect(pushMocks.refreshMobilePush).toHaveBeenCalledWith('new', expect.any(Array))) })
+    await act(async () => { resolveOld(true); await oldRefresh })
+
+    expect(container.textContent).toContain('This server is configured. Enable only on a device you control.')
+    expect((container.querySelector('button[aria-label="Disable push notifications"]') as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('ignores a stale capability response from the previous profile', async () => {

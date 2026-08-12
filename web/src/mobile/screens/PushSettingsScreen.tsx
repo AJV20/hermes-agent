@@ -53,11 +53,15 @@ export function PushSettingsScreen({ profile }: { profile: string }) {
   const effectiveDeviceEnabled = loaded && deviceEnabled
 
   useEffect(() => {
-    if (!loaded || !effectiveDeviceEnabled || support !== 'ready') return
-    void refreshMobilePush(profile, categories).catch(() => {
-      setMessage('Could not update notification categories for this device.')
+    if (!loaded || !effectiveServerEnabled || support !== 'ready') return
+    let cancelled = false
+    void refreshMobilePush(profile, categories).then(enabled => {
+      if (!cancelled) setDeviceEnabled(enabled)
+    }).catch(() => {
+      if (!cancelled) setMessage('Update failed.')
     })
-  }, [categories, effectiveDeviceEnabled, loaded, profile, support])
+    return () => { cancelled = true }
+  }, [categories, effectiveServerEnabled, loaded, profile, support])
 
   const guidance = support === 'denied'
     ? 'Notifications are blocked. Change this site’s notification permission in browser settings, then reload.'
@@ -105,7 +109,7 @@ export function PushSettingsScreen({ profile }: { profile: string }) {
       <div className="mobile-page-heading"><div><p className="mobile-eyebrow">Private alerts</p><h1>Push notifications</h1></div></div>
       <section className="mobile-notification-privacy">
         <ShieldCheck />
-        <span><strong>Privacy preview</strong><small>Lock-screen alerts only say “Open Hermes to view this notification.” Content is fetched after authenticated app access.</small></span>
+        <span><strong>Privacy</strong><small>Alerts say “Open Hermes to view.” Details load after unlock.</small></span>
       </section>
       <section className="mobile-empty-card">
         <Bell />

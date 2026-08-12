@@ -143,6 +143,12 @@ describe('mobile bottom navigation layout', () => {
     expect(bubble).toContain('max-width: 90%')
   })
 
+  it('translates constrained chat routes to the visible document origin during an iOS keyboard pan', () => {
+    const route = styles.match(/\.mobile-chat-route\s*\{([^}]*)\}/)?.[1] ?? ''
+
+    expect(route).toContain('top: var(--mvt, 0)')
+  })
+
   it('applies synchronized viewport sizing and mobile tokens to direct chat routes', () => {
     const route = styles.match(/\.mobile-chat-route\s*\{([^}]*)\}/)?.[1] ?? ''
     const chatBlocks = [...styles.matchAll(/\.mobile-chat-shell\s*\{([^}]*)\}/g)].map(match => match[1])
