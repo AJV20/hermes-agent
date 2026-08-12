@@ -43,6 +43,8 @@ const apiMocks = vi.hoisted(() => ({
     ]
   })),
   getMobileNotifications: vi.fn(async () => ({ items: [], total: 0 })),
+  getMobilePushCapability: vi.fn(async () => ({ enabled: false, public_key: null })),
+  getMobilePushSubscription: vi.fn(async () => ({ subscription: null })),
   pauseCronJob: vi.fn(async (id: string) => ({ id, enabled: false, name: 'Morning briefing' })),
   resumeCronJob: vi.fn(async (id: string) => ({ id, enabled: true, name: 'Morning briefing' })),
   triggerCronJob: vi.fn(async (id: string) => ({ id, enabled: true, name: 'Morning briefing', state: 'running' })),
@@ -165,6 +167,8 @@ beforeEach(async () => {
     ]
   })
   apiMocks.getMobileNotifications.mockReset().mockResolvedValue({ items: [], total: 0 })
+  apiMocks.getMobilePushCapability.mockReset().mockResolvedValue({ enabled: false, public_key: null })
+  apiMocks.getMobilePushSubscription.mockReset().mockResolvedValue({ subscription: null })
   apiMocks.pauseCronJob.mockReset().mockImplementation(async (id: string) => ({ id, enabled: false, name: 'Morning briefing' }))
   apiMocks.resumeCronJob.mockReset().mockImplementation(async (id: string) => ({ id, enabled: true, name: 'Morning briefing' }))
   apiMocks.triggerCronJob.mockReset().mockImplementation(async (id: string) => ({
@@ -360,6 +364,13 @@ describe('MobileApp', () => {
       ;(container.querySelector('button[aria-label="Remove work.txt"], button[aria-label="Cancel work.txt"]') as HTMLButtonElement).click()
     })
     await waitForReact(() => expect(install.disabled).toBe(false))
+  })
+
+  it('opens Push settings instead of falling back to Home', async () => {
+    await renderAt('/mobile/push')
+
+    expect(container.textContent).toContain('Push notifications')
+    expect(container.textContent).not.toContain('Today')
   })
 
   it('loads, marks, and dismisses durable notifications within the selected profile', async () => {
