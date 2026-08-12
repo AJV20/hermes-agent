@@ -15,6 +15,29 @@ describe('PWA mobile shell', () => {
     }
   })
 
+  it('ships separate full-bleed any-purpose and maskable icon assets', () => {
+    const manifest = JSON.parse(readFileSync(new URL('../public/manifest.webmanifest', import.meta.url), 'utf8')) as {
+      icons?: Array<{ src: string; sizes: string; type: string; purpose?: string }>
+    }
+    const icons = manifest.icons ?? []
+
+    expect(icons).toEqual(expect.arrayContaining([
+      expect.objectContaining({ src: 'pwa-icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' }),
+      expect.objectContaining({ src: 'pwa-icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' }),
+      expect.objectContaining({ src: 'pwa-icon-maskable-192.png', sizes: '192x192', type: 'image/png', purpose: 'maskable' }),
+      expect.objectContaining({ src: 'pwa-icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }),
+    ]))
+    for (const icon of icons) {
+      expect(existsSync(new URL(`../public/${icon.src}`, import.meta.url))).toBe(true)
+    }
+    const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8')
+    expect(html).toContain('<link rel="icon" type="image/x-icon" href="/favicon.ico" />')
+    expect(html).not.toContain('type="image/svg+xml" href="/favicon.ico"')
+    expect(html).toContain(
+      '<link rel="apple-touch-icon" sizes="180x180" href="/pwa-icon-180.png" />',
+    )
+  })
+
   it('allows iPad installations to rotate between portrait and landscape', () => {
     const manifest = JSON.parse(readFileSync(new URL('../public/manifest.webmanifest', import.meta.url), 'utf8')) as {
       orientation?: string

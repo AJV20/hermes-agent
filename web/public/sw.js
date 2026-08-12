@@ -67,6 +67,7 @@ function isStaticAsset(request, url) {
   if (pathname === "/auth" || pathname.startsWith("/auth/")) return false;
   if (pathname === "/manifest.webmanifest") return true;
   if (pathname === "/favicon.ico") return true;
+  if (/^\/pwa-icon(?:-maskable)?(?:-\d+)?\.png$/.test(pathname)) return true;
   return (
     STATIC_DESTINATIONS.has(request.destination) ||
     STATIC_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix))
