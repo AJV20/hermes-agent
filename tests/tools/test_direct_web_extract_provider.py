@@ -209,6 +209,35 @@ def test_explicit_direct_extract_backend_resolves_without_reinterpreting_searxng
 
 
 @pytest.mark.anyio
+async def test_search_only_backend_error_recommends_direct_extractor(monkeypatch):
+    import json
+
+    from agent.web_search_registry import _reset_for_tests, register_provider
+    from plugins.web.direct.provider import DirectWebExtractProvider
+    from plugins.web.searxng.provider import SearXNGWebSearchProvider
+    from tools import web_tools
+
+    _reset_for_tests()
+    register_provider(SearXNGWebSearchProvider())
+    register_provider(DirectWebExtractProvider())
+    monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+    monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
+
+    async def allow_public_url(url: str) -> bool:
+        return True
+
+    monkeypatch.setattr(web_tools, "async_is_safe_url", allow_public_url)
+    try:
+        result = json.loads(
+            await web_tools.web_extract_tool(["https://docs.example.test/page"])
+        )
+        assert "direct (free, no key)" in result["error"]
+    finally:
+        _reset_for_tests()
+        register_all_web_providers()
+
+
+@pytest.mark.anyio
 async def test_direct_extract_tool_uses_explicit_backend_without_credentials(monkeypatch):
     import json
 
