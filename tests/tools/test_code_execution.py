@@ -18,6 +18,7 @@ import pytest
 import json
 import os
 import socket
+import tempfile
 import time
 
 os.environ["TERMINAL_ENV"] = "local"
@@ -221,6 +222,92 @@ class TestExecuteCode(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertIn("hello world", result["output"])
         self.assertEqual(result["tool_calls_made"], 0)
+
+    def test_gateway_sandbox_cannot_submit_launchd_job_via_subprocess(self):
+        """Python subprocess must not bypass the gateway lifecycle guard."""
+        with tempfile.TemporaryDirectory() as td:
+            marker = os.path.join(td, "launchctl-ran")
+            fake_launchctl = os.path.join(td, "launchctl")
+            with open(fake_launchctl, "w", encoding="utf-8") as handle:
+                handle.write(f"#!/bin/sh\nprintf ran > {marker!r}\n")
+            os.chmod(fake_launchctl, 0o700)
+            code = (
+                "import subprocess\n"
+                f"subprocess.run([{fake_launchctl!r}, 'submit', '-l', "
+                "'ai.hermes.activate-release-test', '--', '/usr/bin/true'], check=True)\n"
+            )
+
+            with patch.dict(os.environ, {"_HERMES_GATEWAY": "1"}):
+                result = self._run(code)
+
+            self.assertEqual(result["status"], "error")
+            self.assertIn("Blocked", result.get("error", ""))
+            self.assertFalse(os.path.exists(marker), "launchctl subprocess executed")
+
+    def test_gateway_sandbox_cannot_hide_launchctl_in_child_script(self):
+        """A helper script must not bypass the gateway process boundary."""
+        with tempfile.TemporaryDirectory() as td:
+            marker = os.path.join(td, "launchctl-ran")
+            fake_launchctl = os.path.join(td, "launchctl")
+            helper = os.path.join(td, "activate.sh")
+            with open(fake_launchctl, "w", encoding="utf-8") as handle:
+                handle.write(f"#!/bin/sh\nprintf ran > {marker!r}\n")
+            with open(helper, "w", encoding="utf-8") as handle:
+                handle.write(
+                    f"#!/bin/sh\n{fake_launchctl!r} submit -l "
+                    "ai.hermes.activate-release-test -- /usr/bin/true\n"
+                )
+            os.chmod(fake_launchctl, 0o700)
+            os.chmod(helper, 0o700)
+            code = (
+                "import subprocess\n"
+                f"subprocess.run(['/bin/sh', {helper!r}], check=True)\n"
+            )
+
+            with patch.dict(os.environ, {"_HERMES_GATEWAY": "1"}):
+                result = self._run(code)
+
+            self.assertEqual(result["status"], "error")
+            self.assertIn("Blocked", result.get("error", ""))
+            self.assertFalse(os.path.exists(marker), "child script executed launchctl")
+
+    def test_gateway_sandbox_cannot_use_posix_spawn_bypass(self):
+        """Low-level posix_spawn must cross the same process boundary."""
+        with tempfile.TemporaryDirectory() as td:
+            marker = os.path.join(td, "launchctl-ran")
+            fake_launchctl = os.path.join(td, "launchctl")
+            with open(fake_launchctl, "w", encoding="utf-8") as handle:
+                handle.write(f"#!/bin/sh\nprintf ran > {marker!r}\n")
+            os.chmod(fake_launchctl, 0o700)
+            code = (
+                "import os\n"
+                f"pid = os.posix_spawn({fake_launchctl!r}, "
+                f"[{fake_launchctl!r}, 'submit', '-l', "
+                "'ai.hermes.activate-release-test', '--', '/usr/bin/true'], os.environ)\n"
+                "os.waitpid(pid, 0)\n"
+            )
+
+            with patch.dict(os.environ, {"_HERMES_GATEWAY": "1"}):
+                result = self._run(code)
+
+            self.assertEqual(result["status"], "error")
+            self.assertIn("Blocked", result.get("error", ""))
+            self.assertFalse(os.path.exists(marker), "posix_spawn executed launchctl")
+
+    def test_non_gateway_sandbox_can_spawn_processes(self):
+        """The gateway-only hard block must not affect interactive CLI use."""
+        code = (
+            "import subprocess\n"
+            "result = subprocess.run(['/usr/bin/true'], check=False)\n"
+            "print(result.returncode)\n"
+        )
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("_HERMES_GATEWAY", None)
+            result = self._run(code)
+
+        self.assertEqual(result["status"], "success")
+        self.assertIn("0", result["output"])
 
     def test_no_tool_call_script_does_not_wait_for_rpc_accept_timeout(self):
         """A no-tool script should not wait seconds for the idle RPC accept thread."""

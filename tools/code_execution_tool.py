@@ -321,6 +321,38 @@ def check_sandbox_requirements() -> bool:
     return True
 
 
+def _gateway_process_audit_guard_source() -> str:
+    """Return a sitecustomize hook that forces process calls through tools.
+
+    ``execute_code`` can otherwise launch commands directly through Python and
+    bypass terminal approvals plus the gateway lifecycle guard. Python audit
+    hooks cover subprocess/os.system/spawn/exec and cannot be removed once
+    registered. Gateway-owned sandboxes must use ``hermes_tools.terminal`` for
+    external commands, so every process action crosses the normal guard.
+    """
+    return r'''import sys
+
+
+def _gateway_process_guard(event, args):
+    if event not in {
+        "subprocess.Popen",
+        "os.system",
+        "os.spawn",
+        "os.posix_spawn",
+        "os.exec",
+    }:
+        return
+    raise PermissionError(
+        "Blocked: execute_code inside the Hermes gateway cannot spawn OS "
+        "processes directly; use hermes_tools.terminal so lifecycle and "
+        "approval guards apply"
+    )
+
+
+sys.addaudithook(_gateway_process_guard)
+'''
+
+
 # ---------------------------------------------------------------------------
 # hermes_tools.py code generator
 # ---------------------------------------------------------------------------
@@ -1386,6 +1418,16 @@ def execute_code(
         # Write the user's script
         with open(os.path.join(tmpdir, "script.py"), "w", encoding="utf-8") as f:
             f.write(code)
+
+        # Python process APIs bypass terminal_tool entirely. When this sandbox
+        # belongs to the gateway, auto-import a non-removable audit hook before
+        # user code starts so subprocess/os.system/spawn/exec cannot register
+        # persistent launchd jobs.
+        if os.environ.get("_HERMES_GATEWAY") == "1":
+            with open(
+                os.path.join(tmpdir, "sitecustomize.py"), "w", encoding="utf-8"
+            ) as f:
+                f.write(_gateway_process_audit_guard_source())
 
         # --- Start RPC server ---
         rpc_token = secrets.token_urlsafe(32)
