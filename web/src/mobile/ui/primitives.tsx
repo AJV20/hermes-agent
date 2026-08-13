@@ -45,7 +45,7 @@ export function BottomNavigation({ active }: { active: ReturnType<typeof routeTa
     { icon: MoreHorizontal, label: 'More', path: '/mobile/more', tab: 'more' }
   ] as const
   return (
-    <nav className="mobile-bottom-nav" aria-label="Mobile navigation">
+    <nav className="mobile-bottom-nav" aria-label="Hermes navigation">
       {items.map(item => {
         const Icon = item.icon
         return (

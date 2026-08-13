@@ -1,4 +1,4 @@
-import { AlertTriangle, Bell, Clock3, MessageCircle, Plus, Send, WifiOff } from 'lucide-react'
+import { AlertTriangle, Bell, Clock3, MessageCircle, Plus, RefreshCw, Send, WifiOff } from 'lucide-react'
 import { Link, useNavigate } from 'react-router'
 
 import type { CronJob, MobileNotification, SessionInfo, StatusResponse } from '@/lib/api'
@@ -10,14 +10,17 @@ import { AppHeader, DesktopDocumentLink, QuickAction } from '../ui/primitives'
 import { CodexQuotaCard } from '../ui/CodexQuotaCard'
 
 export function HomeScreen({
-  cronJobs, notificationError, notifications, onMarkNotificationRead, preferences, profile, sessions, sessionsPhase, status, statusPhase, tasksPhase
+  cronJobs, notificationError, notifications, onMarkNotificationRead, onRefresh, preferences, profile, refreshError, refreshing, sessions, sessionsPhase, status, statusPhase, tasksPhase
 }: {
   cronJobs: CronJob[]
   notificationError: string | null
   notifications: MobileNotification[]
   onMarkNotificationRead: (notification: MobileNotification) => void
+  onRefresh: () => void
   preferences: MobilePreferences
   profile: string
+  refreshError: string | null
+  refreshing: boolean
   sessions: SessionInfo[]
   sessionsPhase: LoadPhase
   status: StatusResponse | null
@@ -30,9 +33,10 @@ export function HomeScreen({
   return <>
     <AppHeader detail={statusPhase === 'loading' ? 'Checking Desktop' : statusPhase === 'error' ? 'Desktop status unavailable' : connected ? 'Connected to Desktop' : 'Desktop unavailable'} />
     <main className={`mobile-screen mobile-home-screen mobile-text-${preferences.textSize} mobile-density-${preferences.density}`}>
-      <section className="mobile-hero"><p className="mobile-eyebrow">Today</p><h1>{greetingForCurrentTime()}</h1><p>{statusPhase === 'loading' ? 'Loading Hermes status…' : statusPhase === 'error' ? 'Could not reach Hermes Desktop.' : activeSessionsLabel(status?.active_sessions)}</p></section>
+      <section className="mobile-hero"><p className="mobile-eyebrow">Today</p><div className="mobile-hero-heading"><h1>{greetingForCurrentTime()}</h1><button aria-label="Refresh mobile data" disabled={refreshing} onClick={onRefresh} type="button"><RefreshCw />{refreshing ? 'Refreshing…' : 'Refresh'}</button></div><p>{statusPhase === 'loading' ? 'Loading Hermes status…' : statusPhase === 'error' ? 'Could not reach Hermes Desktop.' : activeSessionsLabel(status?.active_sessions)}</p></section>
       <Link aria-label="Ask Hermes" className="mobile-ask-bar" to="/mobile/chat/new"><span>Ask Hermes anything…</span><Send /></Link>
       {notificationError && <div className="mobile-inline-error" role="alert">{notificationError}</div>}
+      {refreshError && <div className="mobile-inline-error" role="alert">{refreshError}</div>}
       <section className="mobile-today-feed" aria-label="Today attention feed">
         {statusPhase === 'error' && <article className="mobile-today-card is-warning"><WifiOff /><div><strong>Desktop status is unavailable</strong><small>Reconnect to see current Hermes activity.</small></div><Link to="/system">Desktop</Link></article>}
         {cards.map(card => {

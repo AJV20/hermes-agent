@@ -130,6 +130,16 @@ describe('mobile bottom navigation layout', () => {
     expect(refreshButton).toContain('height: 3rem')
   })
 
+  it('keeps the mobile model selector summary and change action usable on phones', () => {
+    const card = styles.match(/\.mobile-model-card\s*\{([^}]*)\}/)?.[1] ?? ''
+    const changeButton = styles.match(/\.mobile-model-card > button\s*\{([^}]*)\}/)?.[1] ?? ''
+
+    expect(card).toContain('grid-template-columns: auto minmax(0, 1fr) auto')
+    expect(changeButton).toContain('min-height: 44px')
+    expect(styles).toMatch(/\.mobile-model-picker-dialog button,[\s\S]*?min-height: 44px/)
+    expect(styles).toMatch(/\.mobile-model-picker-dialog input\s*\{[\s\S]*?font-size: 16px/)
+  })
+
   it('keeps update-banner actions at least 44 CSS pixels tall with the 15px base type scale', () => {
     const updateButton = styles.match(/\.mobile-update-banner button\s*\{([^}]*)\}/)?.[1] ?? ''
 
@@ -182,11 +192,23 @@ describe('mobile bottom navigation layout', () => {
   })
 
   it('adapts the mobile shell, lists, chat, and sheets for iPad viewports', () => {
-    const tablet = styles.match(/@media \(min-width: 48rem\) \{([\s\S]*?)\n\}/)?.[1] ?? ''
+    const tablet = styles.match(/@media \(min-width: 46\.5rem\) \{([\s\S]*?)\n\}/)?.[1] ?? ''
 
     expect(tablet).toContain('width: min(100%, 64rem)')
+    expect(tablet).toContain('grid-template-columns: 6rem minmax(0, 1fr)')
+    expect(tablet).toContain('grid-template-rows: auto minmax(0, 1fr)')
     expect(tablet).toContain('width: min(100%, 52rem)')
     expect(tablet).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))')
+    expect(tablet).toContain('.mobile-app-header')
+    expect(tablet).toContain('grid-column: 2')
+    expect(tablet).toContain('.mobile-app-shell > .mobile-app-header > .mobile-icon-button:last-child')
+    expect(tablet).toContain('display: none')
+    expect(tablet).toContain('.mobile-bottom-nav')
+    expect(tablet).toContain('position: static')
+    expect(tablet).toContain('grid-row: 1 / -1')
+    expect(tablet).toContain('grid-template-rows: repeat(4, minmax(4.5rem, auto))')
+    expect(tablet).toContain('border-right: 1px solid var(--mobile-line)')
+    expect(tablet).toContain('border-top: 0')
     expect(tablet).toContain('.mobile-home-screen')
     expect(tablet).toContain('.mobile-session-list')
     expect(tablet).toContain('.mobile-task-list')
@@ -195,5 +217,20 @@ describe('mobile bottom navigation layout', () => {
     expect(tablet).toContain('align-items: center')
     expect(tablet).toContain('border-radius: 1.5rem')
     expect(tablet).toContain('max-width: 72%')
+    expect(tablet).toContain('left: calc(50% + 3rem)')
+  })
+
+  it('expands the iPad rail into a labeled desktop sidebar on wide displays', () => {
+    const desktop = styles.match(/@media \(min-width: 75rem\) \{([\s\S]*?)\n\}/)?.[1] ?? ''
+
+    expect(desktop).toContain('grid-template-columns: 15rem minmax(0, 1fr)')
+    expect(desktop).toContain('width: min(100%, 100rem)')
+    expect(desktop).toContain('.mobile-bottom-nav a')
+    expect(desktop).toContain('flex-direction: row')
+    expect(desktop).toContain('justify-content: flex-start')
+    expect(desktop).toContain('font-size: 0.82rem')
+    expect(desktop).toContain('.mobile-chat-shell')
+    expect(desktop).toContain('width: min(100%, 72rem)')
+    expect(desktop).toContain('left: calc(50% + 7.5rem)')
   })
 })

@@ -43,7 +43,13 @@ const apiMocks = vi.hoisted(() => ({
     ]
   })),
   getMobileNotifications: vi.fn(async () => ({ items: [], total: 0 })),
+  getModelOptions: vi.fn(async () => ({
+    model: 'gpt-5.6-sol',
+    provider: 'openai-codex',
+    providers: [{ name: 'OpenAI Codex', slug: 'openai-codex', models: ['gpt-5.6-sol', 'gpt-5.6-terra'], is_current: true }]
+  })),
   getMobilePushCapability: vi.fn(async () => ({ enabled: false, public_key: null })),
+  setModelAssignment: vi.fn(async () => ({ ok: true, scope: 'main', provider: 'openai-codex', model: 'gpt-5.6-terra' })),
   getMobilePushSubscription: vi.fn(async () => ({ subscription: null })),
   pauseCronJob: vi.fn(async (id: string) => ({ id, enabled: false, name: 'Morning briefing' })),
   resumeCronJob: vi.fn(async (id: string) => ({ id, enabled: true, name: 'Morning briefing' })),
@@ -167,7 +173,13 @@ beforeEach(async () => {
     ]
   })
   apiMocks.getMobileNotifications.mockReset().mockResolvedValue({ items: [], total: 0 })
+  apiMocks.getModelOptions.mockReset().mockResolvedValue({
+    model: 'gpt-5.6-sol',
+    provider: 'openai-codex',
+    providers: [{ name: 'OpenAI Codex', slug: 'openai-codex', models: ['gpt-5.6-sol', 'gpt-5.6-terra'], is_current: true }]
+  })
   apiMocks.getMobilePushCapability.mockReset().mockResolvedValue({ enabled: false, public_key: null })
+  apiMocks.setModelAssignment.mockReset().mockResolvedValue({ ok: true, scope: 'main', provider: 'openai-codex', model: 'gpt-5.6-terra' })
   apiMocks.getMobilePushSubscription.mockReset().mockResolvedValue({ subscription: null })
   apiMocks.pauseCronJob.mockReset().mockImplementation(async (id: string) => ({ id, enabled: false, name: 'Morning briefing' }))
   apiMocks.resumeCronJob.mockReset().mockImplementation(async (id: string) => ({ id, enabled: true, name: 'Morning briefing' }))
@@ -258,6 +270,31 @@ async function renderAt(path: string) {
       await import('./chat/ChatScreen')
       await Promise.resolve()
     })
+  } else if (path.startsWith('/mobile/chats')) {
+    await act(async () => {
+      await import('./screens/ChatsScreen')
+      await Promise.resolve()
+    })
+  } else if (path.startsWith('/mobile/tasks')) {
+    await act(async () => {
+      await import('./screens/TasksScreen')
+      await Promise.resolve()
+    })
+  } else if (path.startsWith('/mobile/notifications')) {
+    await act(async () => {
+      await import('./screens/NotificationsScreen')
+      await Promise.resolve()
+    })
+  } else if (path.startsWith('/mobile/push')) {
+    await act(async () => {
+      await import('./screens/PushSettingsScreen')
+      await Promise.resolve()
+    })
+  } else if (path.startsWith('/mobile/models')) {
+    await act(async () => {
+      await import('./screens/ModelSettingsScreen')
+      await Promise.resolve()
+    })
   }
 }
 
@@ -290,6 +327,227 @@ describe('MobileApp', () => {
     expect(container.textContent).toContain('Morning briefing')
   })
 
+  it('refreshes mobile data when a stale PWA returns to the foreground', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    await renderAt('/mobile')
+
+    expect(apiMocks.getStatus).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getCronJobs).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getSessions).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getMobileNotifications).toHaveBeenCalledTimes(1)
+
+    now.mockReturnValue(121_001)
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await Promise.resolve()
+    })
+
+    await waitForReact(() => {
+      expect(apiMocks.getStatus).toHaveBeenCalledTimes(2)
+      expect(apiMocks.getCronJobs).toHaveBeenCalledTimes(2)
+      expect(apiMocks.getSessions).toHaveBeenCalledTimes(2)
+      expect(apiMocks.getMobileNotifications).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('does not create a refresh storm from fresh foreground events', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    await renderAt('/mobile')
+
+    await act(async () => {
+      window.dispatchEvent(new PageTransitionEvent('pageshow'))
+      document.dispatchEvent(new Event('visibilitychange'))
+      await Promise.resolve()
+    })
+
+    expect(apiMocks.getStatus).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getCronJobs).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getSessions).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getMobileNotifications).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes mobile data after reconnecting online', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    await renderAt('/mobile')
+
+    now.mockReturnValue(6_001)
+    await act(async () => {
+      window.dispatchEvent(new Event('online'))
+      await Promise.resolve()
+    })
+
+    await waitForReact(() => {
+      expect(apiMocks.getStatus).toHaveBeenCalledTimes(2)
+      expect(apiMocks.getCronJobs).toHaveBeenCalledTimes(2)
+      expect(apiMocks.getSessions).toHaveBeenCalledTimes(2)
+      expect(apiMocks.getMobileNotifications).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('does not let an older initial request overwrite a completed manual refresh', async () => {
+    let resolveInitialStatus!: (value: { active_sessions: number; gateway_running: boolean; gateway_state: string; version: string }) => void
+    apiMocks.getStatus.mockReturnValueOnce(new Promise(resolve => { resolveInitialStatus = resolve }))
+    await renderAt('/mobile')
+    apiMocks.getStatus.mockResolvedValueOnce({
+      active_sessions: 8,
+      gateway_running: true,
+      gateway_state: 'running',
+      version: 'fresh'
+    })
+
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Refresh mobile data"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    await waitForReact(() => expect(container.textContent).toContain('8 sessions active.'))
+
+    await act(async () => {
+      resolveInitialStatus({ active_sessions: 1, gateway_running: true, gateway_state: 'running', version: 'stale' })
+      await Promise.resolve()
+    })
+    expect(container.textContent).toContain('8 sessions active.')
+    expect(container.textContent).not.toContain('1 session active.')
+  })
+
+  it('accepts older initial resources when a newer manual refresh fails', async () => {
+    let resolveInitialStatus!: (value: { active_sessions: number; gateway_running: boolean; gateway_state: string; version: string }) => void
+    let resolveInitialTasks!: (value: never) => void
+    let resolveInitialSessions!: (value: never) => void
+    let resolveInitialNotifications!: (value: never) => void
+    apiMocks.getStatus
+      .mockReturnValueOnce(new Promise(resolve => { resolveInitialStatus = resolve }))
+      .mockRejectedValueOnce(new Error('offline'))
+    apiMocks.getCronJobs
+      .mockReturnValueOnce(new Promise(resolve => { resolveInitialTasks = resolve }) as never)
+      .mockRejectedValueOnce(new Error('offline'))
+    apiMocks.getSessions
+      .mockReturnValueOnce(new Promise(resolve => { resolveInitialSessions = resolve }) as never)
+      .mockRejectedValueOnce(new Error('offline'))
+    apiMocks.getMobileNotifications
+      .mockReturnValueOnce(new Promise(resolve => { resolveInitialNotifications = resolve }) as never)
+      .mockRejectedValueOnce(new Error('offline'))
+    await renderAt('/mobile')
+
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Refresh mobile data"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    await waitForReact(() => expect(container.textContent).toContain('Could not refresh all mobile data.'))
+
+    await act(async () => {
+      resolveInitialStatus({ active_sessions: 4, gateway_running: true, gateway_state: 'running', version: 'initial' })
+      resolveInitialTasks([{ id: 'initial-task', enabled: true, name: 'Initial scheduled task', next_run_at: '2026-08-14T11:00:00Z' }] as never)
+      resolveInitialSessions({
+        limit: 30,
+        offset: 0,
+        total: 1,
+        sessions: [{ id: 'initial-session', title: 'Initial conversation' }]
+      } as never)
+      resolveInitialNotifications({
+        items: [{ id: 'initial-notice', level: 'error', read_at: null, title: 'Initial notification', body: 'Recovered initial data.', created_at: 1 }],
+        total: 1
+      } as never)
+      await Promise.resolve()
+    })
+
+    await waitForReact(() => {
+      expect(container.textContent).toContain('4 sessions active.')
+      expect(container.textContent).toContain('Initial scheduled task')
+      expect(container.textContent).toContain('Initial conversation')
+      expect(container.textContent).toContain('Initial notification')
+    })
+  })
+
+  it('keeps current mobile data visible when a manual refresh fails', async () => {
+    apiMocks.getStatus.mockResolvedValueOnce({
+      active_sessions: 7,
+      gateway_running: true,
+      gateway_state: 'running',
+      version: '1.0.0'
+    })
+    await renderAt('/mobile')
+    expect(container.textContent).toContain('7 sessions active.')
+    expect(container.textContent).toContain('Morning briefing')
+
+    apiMocks.getStatus.mockRejectedValueOnce(new Error('offline'))
+    apiMocks.getCronJobs.mockRejectedValueOnce(new Error('offline'))
+    apiMocks.getSessions.mockRejectedValueOnce(new Error('offline'))
+    apiMocks.getMobileNotifications.mockRejectedValueOnce(new Error('offline'))
+
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Refresh mobile data"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+
+    await waitForReact(() => expect(container.textContent).toContain('Could not refresh all mobile data.'))
+    expect(container.textContent).toContain('7 sessions active.')
+    expect(container.textContent).toContain('Morning briefing')
+    expect(container.textContent).not.toContain('Could not reach Hermes Desktop.')
+    expect(container.textContent).not.toContain('Could not load scheduled tasks.')
+  })
+
+  it('keeps unrelated initial resources alive when the conversation scope changes', async () => {
+    let resolveStatus!: (value: { active_sessions: number; gateway_running: boolean; gateway_state: string; version: string }) => void
+    let resolveTasks!: (value: Array<{ id: string; enabled: boolean; name: string; next_run_at: string }>) => void
+    let resolveNotifications!: (value: { items: never[]; total: number }) => void
+    apiMocks.getStatus.mockReturnValueOnce(new Promise(resolve => { resolveStatus = resolve }))
+    apiMocks.getCronJobs.mockReturnValueOnce(new Promise(resolve => { resolveTasks = resolve }))
+    apiMocks.getMobileNotifications.mockReturnValueOnce(new Promise(resolve => { resolveNotifications = resolve }))
+    apiMocks.getSessions
+      .mockResolvedValueOnce({ limit: 30, offset: 0, total: 1, sessions: [{ id: 'active-1', title: 'Active conversation' } as never] })
+      .mockResolvedValueOnce({ limit: 30, offset: 0, total: 1, sessions: [{ id: 'archived-1', title: 'Archived conversation', archived: true } as never] })
+    await renderAt('/mobile/chats')
+
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="View archived conversations"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    await waitForReact(() => expect(container.textContent).toContain('Archived conversation'))
+
+    await act(async () => {
+      resolveStatus({ active_sessions: 3, gateway_running: true, gateway_state: 'running', version: 'fresh' })
+      resolveTasks([{ id: 'review', enabled: true, name: 'Review queue', next_run_at: '2026-08-14T11:00:00Z' }])
+      resolveNotifications({ items: [], total: 0 })
+      await Promise.resolve()
+    })
+    await act(async () => {
+      ;(container.querySelector('nav[aria-label="Hermes navigation"] a[href="/mobile"]') as HTMLAnchorElement).click()
+      await Promise.resolve()
+    })
+
+    await waitForReact(() => expect(container.textContent).toContain('3 sessions active.'))
+    expect(container.textContent).toContain('Review queue')
+  })
+
+  it('cancels an old profile refresh without leaving mobile refresh disabled', async () => {
+    await renderAt('/mobile')
+    let resolveOldStatus!: (value: { active_sessions: number; gateway_running: boolean; gateway_state: string; version: string }) => void
+    apiMocks.getStatus.mockReturnValueOnce(new Promise(resolve => { resolveOldStatus = resolve }))
+    apiMocks.getCronJobs.mockReturnValueOnce(new Promise(() => {}))
+    apiMocks.getSessions.mockReturnValueOnce(new Promise(() => {}))
+    apiMocks.getMobileNotifications.mockReturnValueOnce(new Promise(() => {}))
+
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Refresh mobile data"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    expect((container.querySelector('button[aria-label="Refresh mobile data"]') as HTMLButtonElement).disabled).toBe(true)
+
+    profileMocks.profile = 'mabel'
+    await renderAt('/mobile')
+    expect((container.querySelector('button[aria-label="Refresh mobile data"]') as HTMLButtonElement).disabled).toBe(false)
+
+    profileMocks.profile = ''
+    await renderAt('/mobile')
+    expect((container.querySelector('button[aria-label="Refresh mobile data"]') as HTMLButtonElement).disabled).toBe(false)
+
+    await act(async () => {
+      resolveOldStatus({ active_sessions: 99, gateway_running: true, gateway_state: 'running', version: 'old' })
+      await Promise.resolve()
+    })
+    expect(container.textContent).not.toContain('99 sessions active.')
+  })
+
   it('shows profile-scoped Codex quota with session and weekly remaining limits', async () => {
     profileMocks.profile = 'mabel'
     await renderAt('/mobile')
@@ -320,6 +578,7 @@ describe('MobileApp', () => {
     await renderAt('/mobile')
 
     const links = Array.from(container.querySelectorAll('.mobile-bottom-nav a'))
+    expect(container.querySelector('nav[aria-label="Hermes navigation"]')).not.toBeNull()
     const labels = links.map(node => node.textContent)
     expect(labels).toEqual(['Home', 'Chats', 'Tasks', 'More'])
     expect(links.map(node => node.getAttribute('aria-current'))).toEqual(['page', null, null, null])
@@ -434,10 +693,34 @@ describe('MobileApp', () => {
     expectDocumentAnchor('/cron')
 
     await renderAt('/mobile/more')
-    expectDocumentAnchor('/models')
     expectDocumentAnchor('/files')
     expectDocumentAnchor('/skills')
     expectDocumentAnchor('/system')
+  })
+
+  it('opens a profile-scoped mobile model selector and applies the main model', async () => {
+    profileMocks.profile = 'mabel'
+    await renderAt('/mobile/models')
+
+    expect(container.textContent).toContain('Model')
+    expect(container.textContent).toContain('gpt-5.6-sol')
+    expect(apiMocks.getModelOptions).toHaveBeenCalledWith({ profile: 'mabel' })
+
+    await act(async () => {
+      ;(container.querySelector('button[data-mobile-model-picker]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    expect(document.body.querySelector('.mobile-model-picker-dialog')).not.toBeNull()
+    const terraLabel = Array.from(document.body.querySelectorAll('span')).find(span => span.textContent?.trim() === 'gpt-5.6-terra') as HTMLSpanElement
+    expect(terraLabel).toBeTruthy()
+    await act(async () => {
+      terraLabel.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+      await Promise.resolve()
+    })
+    await waitForReact(() => expect(apiMocks.setModelAssignment).toHaveBeenCalledTimes(1))
+    expect(apiMocks.setModelAssignment).toHaveBeenCalledWith(expect.objectContaining({
+      scope: 'main', provider: 'openai-codex', model: 'gpt-5.6-terra'
+    }), 'mabel')
   })
 
   it('uses a time-appropriate greeting and correct active-session grammar', async () => {
@@ -839,6 +1122,94 @@ describe('MobileApp', () => {
 
     expect(container.textContent).toContain('Mabel conversation')
     expect(container.textContent).not.toContain('Leaked default conversation')
+  })
+
+  it('discards a stale load-more page after a newer coordinated refresh', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    let resolveOldPage!: (value: never) => void
+    apiMocks.getSessions
+      .mockResolvedValueOnce({
+        limit: 30,
+        offset: 0,
+        total: 2,
+        sessions: [{ id: 'first-1', title: 'First conversation' } as never]
+      })
+      .mockReturnValueOnce(new Promise(resolve => { resolveOldPage = resolve }) as never)
+      .mockResolvedValueOnce({
+        limit: 30,
+        offset: 0,
+        total: 1,
+        sessions: [{ id: 'fresh-1', title: 'Fresh conversation' } as never]
+      })
+    await renderAt('/mobile/chats')
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Load more conversations"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+
+    now.mockReturnValue(6_001)
+    await act(async () => {
+      window.dispatchEvent(new Event('online'))
+      await Promise.resolve()
+    })
+    await waitForReact(() => expect(container.textContent).toContain('Fresh conversation'))
+
+    await act(async () => {
+      resolveOldPage({
+        limit: 30,
+        offset: 1,
+        total: 2,
+        sessions: [{ id: 'stale-2', title: 'Stale older conversation' }]
+      } as never)
+      await Promise.resolve()
+    })
+
+    expect(container.textContent).toContain('Fresh conversation')
+    expect(container.textContent).not.toContain('Stale older conversation')
+  })
+
+  it('discards a stale load-more page after a conversation-only mutation refresh', async () => {
+    let resolveOldPage!: (value: never) => void
+    apiMocks.getSessions
+      .mockResolvedValueOnce({
+        limit: 30,
+        offset: 0,
+        total: 2,
+        sessions: [{ id: 'first-1', title: 'First conversation' } as never]
+      })
+      .mockReturnValueOnce(new Promise(resolve => { resolveOldPage = resolve }) as never)
+      .mockResolvedValueOnce({
+        limit: 30,
+        offset: 0,
+        total: 1,
+        sessions: [{ id: 'fresh-1', title: 'Fresh after mutation' } as never]
+      })
+    await renderAt('/mobile/chats')
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Load more conversations"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Actions for First conversation"]') as HTMLButtonElement).click()
+    })
+    await act(async () => {
+      ;(container.querySelector('button[aria-label="Archive conversation"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    await waitForReact(() => expect(container.textContent).toContain('Fresh after mutation'))
+
+    await act(async () => {
+      resolveOldPage({
+        limit: 30,
+        offset: 1,
+        total: 2,
+        sessions: [{ id: 'stale-2', title: 'Stale after mutation' }]
+      } as never)
+      await Promise.resolve()
+    })
+
+    expect(container.textContent).toContain('Fresh after mutation')
+    expect(container.textContent).not.toContain('Stale after mutation')
   })
 
   it('opens an attachment picker from the chat composer', async () => {
@@ -1877,7 +2248,7 @@ describe('MobileApp', () => {
     await renderAt('/mobile/chat/%')
 
     expect(container.textContent).toContain('Chats')
-    expect(container.querySelector('nav[aria-label="Mobile navigation"]')).not.toBeNull()
+    expect(container.querySelector('nav[aria-label="Hermes navigation"]')).not.toBeNull()
   })
 
   it('resumes a session through the selected management profile', async () => {

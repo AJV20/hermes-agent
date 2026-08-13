@@ -4,7 +4,7 @@ export function routeTab(pathname: string): 'chats' | 'home' | 'more' | 'tasks' 
   if (pathname.startsWith('/mobile/chat')) return 'chats'
   if (pathname.startsWith('/mobile/chats')) return 'chats'
   if (pathname.startsWith('/mobile/tasks')) return 'tasks'
-  if (/^\/mobile\/(notifications|push|more)/.test(pathname)) return 'more'
+  if (/^\/mobile\/(models|notifications|push|more)/.test(pathname)) return 'more'
   return 'home'
 }
 

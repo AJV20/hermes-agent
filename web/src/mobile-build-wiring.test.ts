@@ -11,12 +11,28 @@ describe("mobile build budget wiring", () => {
     expect(main).not.toContain("import(entry)");
   });
 
-  it("lazy-loads the chat route so Home does not pay for the full composer and markdown graph", () => {
+  it("lazy-loads heavy non-Home mobile screens without adding a preferences-only cold request", () => {
     const mobileApp = readFileSync(join(process.cwd(), "src", "mobile", "MobileApp.tsx"), "utf8");
+    const routeModules = [
+      "./chat/ChatScreen",
+      "./screens/ChatsScreen",
+      "./screens/PushSettingsScreen",
+      "./screens/TasksScreen",
+    ];
 
-    expect(mobileApp).toContain("lazy(() => import('./chat/ChatScreen')")
-    expect(mobileApp).not.toContain("import { ChatScreen } from './chat/ChatScreen'")
+    for (const routeModule of routeModules) {
+      expect(mobileApp).toContain(`lazy(() => import('${routeModule}')`)
+    }
+    expect(mobileApp).toContain("import { MoreScreen } from './screens/MoreScreen'")
+    expect(mobileApp).toContain("import { NotificationsScreen } from './screens/NotificationsScreen'")
+    expect(mobileApp).not.toMatch(/import \{ (ChatScreen|ChatsScreen|PushSettingsScreen|TasksScreen) \} from/)
     expect(mobileApp).toContain('<Suspense')
+  });
+
+  it("does not suppress browser zoom from the mobile entry", () => {
+    const source = readFileSync(join(process.cwd(), "src", "mobile-main.tsx"), "utf8");
+
+    expect(source).not.toContain("installMobileZoomGuard");
   });
 
   it("emits a Vite manifest and exposes the verifier as an npm script", () => {
